@@ -15,7 +15,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 public final class CdaDb extends SQLiteOpenHelper {
-    private static final int VER = 1;
+    private static final int VER = 2;
     private static final long CACHE_MS = 6L * 60 * 60 * 1000;
 
     public CdaDb(Context c) {
@@ -34,7 +34,13 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     @Override
-    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {}
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            // v1.0.0 could cache an Android bootstrap/interstitial page as an
+            // empty search result. Drop only search cache; history/favorites stay.
+            db.delete("search_cache", null, null);
+        }
+    }
 
     public synchronized void removeHistory(String id) {
         getWritableDatabase().delete("history", "id=?", new String[]{id});
@@ -259,6 +265,7 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     public synchronized void putSearch(String key, int page, SearchPage sp) {
+        if (sp == null || (sp.raw <= 0 && sp.movies.isEmpty())) return;
         try {
             JSONObject root = new JSONObject();
             root.put("raw", sp.raw);
@@ -286,6 +293,7 @@ public final class CdaDb extends SQLiteOpenHelper {
             sp.nonVideo = root.optInt("nonVideo");
             JSONArray a = root.optJSONArray("movies");
             if (a != null) for (int i = 0; i < a.length(); i++) sp.movies.add(Movie.fromJson(a.getJSONObject(i)));
+            if (sp.raw <= 0 && sp.movies.isEmpty()) return null;
             return sp;
         } catch (Exception e) {
             return null;

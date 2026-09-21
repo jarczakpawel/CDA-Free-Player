@@ -242,10 +242,11 @@ jobs:
           QT_QPA_PLATFORM=offscreen \
           QTWEBENGINE_DISABLE_SANDBOX=1 \
             dist/cda-free-player/cda-free-player --self-test
-          mkdir -p release_out
-          tar -C dist -czf "release_out/CDA-Free-Player-Linux-${{ matrix.arch }}-v${VERSION}.tar.gz" cda-free-player
-          test -s "release_out/CDA-Free-Player-Linux-${{ matrix.arch }}-v${VERSION}.tar.gz"
-          tar -tzf "release_out/CDA-Free-Player-Linux-${{ matrix.arch }}-v${VERSION}.tar.gz" >/dev/null
+          bash packaging/appimage.sh "${{ matrix.arch }}"
+          APPIMAGE="release_out/CDA-Free-Player-Linux-${{ matrix.arch }}-v${VERSION}.AppImage"
+          test -x "$APPIMAGE"
+          test -s "$APPIMAGE"
+          file "$APPIMAGE"
 
       - name: Build Windows
         if: matrix.kind == 'windows'
@@ -338,6 +339,7 @@ jobs:
           gradle --no-daemon --stacktrace --warning-mode all -p android-tv \
             :app:checkDebugAarMetadata \
             :app:compileDebugJavaWithJavac \
+            :app:testDebugUnitTest \
             :app:lintDebug
       - name: Build debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
@@ -458,8 +460,8 @@ jobs:
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < VERSION)"
           for asset in \
-            "CDA-Free-Player-Linux-x64-v${VERSION}.tar.gz" \
-            "CDA-Free-Player-Linux-arm64-v${VERSION}.tar.gz" \
+            "CDA-Free-Player-Linux-x64-v${VERSION}.AppImage" \
+            "CDA-Free-Player-Linux-arm64-v${VERSION}.AppImage" \
             "CDA-Free-Player-Windows-x64-v${VERSION}.zip" \
             "CDA-Free-Player-macOS-x64-v${VERSION}.zip" \
             "CDA-Free-Player-macOS-arm64-v${VERSION}.zip" \

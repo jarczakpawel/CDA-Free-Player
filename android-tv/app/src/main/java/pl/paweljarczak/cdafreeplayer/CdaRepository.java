@@ -119,30 +119,8 @@ public final class CdaRepository {
             return;
         }
 
-        String url = searchUrl(s.query, s.sort, s.duration, page);
-        gateway.fetch(url, true, s.token, new CdaGateway.Callback() {
-            @Override public void onHtml(String html, boolean via) {
-                if (s.token.isCancelled()) return;
-                parser.execute(() -> {
-                    SearchPage parsed = CdaParser.parseSearch(html);
-                    db.putSearch(s.key, page, parsed);
-                    db.decorateLocalState(parsed.movies);
-                    main.post(() -> {
-                        if (via) resumeEnrichment();
-                        handlePage(s, page, parsed);
-                    });
-                });
-            }
-            @Override public void onError(String e) {
-                s.loading = false;
-                if (!s.token.isCancelled()) s.listener.onError(e);
-            }
-            @Override public void onChallengeRequired() {}
-            @Override public void onVerification(boolean interactive) {
-                s.listener.onVerification(interactive);
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
-            }
-        });
+        String url = searchUrl(s.query, s.sort, s.duration, page, false);
+        fetchSearchAttempt(s, page, url, false, null);
     }
 
     private void handlePage(SearchSession s, int page, SearchPage p) {
@@ -162,11 +140,62 @@ public final class CdaRepository {
         enqueueEnrichment(p.movies);
     }
 
-    private static String searchUrl(String q, String sort, String duration, int page) {
-        String slug = q.trim().toLowerCase(Locale.ROOT).replaceAll("[\\\\/ ]+", "_");
+    private void fetchSearchAttempt(SearchSession s, int page, String url, boolean forcedP1, SearchPage first) {
+        CdaGateway.Callback cb = new CdaGateway.Callback() {
+            @Override public void onHtml(String html, boolean via) {
+                if (s.token.isCancelled()) return;
+                parser.execute(() -> {
+                    SearchPage parsed = CdaParser.parseSearch(html);
+
+                    // Desktop already had this recovery and Android did not. CDA can
+                    // return an empty first form of /video/show/<query> while /p1 has
+                    // the actual catalogue. When page 1 is empty, force a real WebView
+                    // fetch of /p1 before accepting "0 films".
+                    if (page == 1 && !forcedP1 && parsed.movies.isEmpty()) {
+                        String retry = searchUrl(s.query, s.sort, s.duration, page, true);
+                        main.post(() -> {
+                            if (!s.token.isCancelled() && s == active)
+                                fetchSearchAttempt(s, page, retry, true, parsed);
+                        });
+                        return;
+                    }
+
+                    SearchPage chosen = parsed;
+                    if (first != null && parsed.movies.isEmpty() && parsed.raw <= first.raw) chosen = first;
+                    final SearchPage result = chosen;
+
+                    // Never persist a transient empty bootstrap/interstitial page.
+                    if (result.raw > 0 || !result.movies.isEmpty()) db.putSearch(s.key, page, result);
+                    db.decorateLocalState(result.movies);
+                    main.post(() -> {
+                        if (via) resumeEnrichment();
+                        handlePage(s, page, result);
+                    });
+                });
+            }
+
+            @Override public void onError(String e) {
+                s.loading = false;
+                if (!s.token.isCancelled()) s.listener.onError(e);
+            }
+
+            @Override public void onChallengeRequired() {}
+
+            @Override public void onVerification(boolean interactive) {
+                s.listener.onVerification(interactive);
+                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
+            }
+        };
+
+        if (forcedP1) gateway.fetchWeb(url, s.token, cb);
+        else gateway.fetch(url, true, s.token, cb);
+    }
+
+    private static String searchUrl(String q, String sort, String duration, int page, boolean forcePageSuffix) {
+        String slug = q.trim().toLowerCase(Locale.ROOT).replaceAll("[\\/ ]+", "_");
         String base = "https://www.cda.pl/video/show/" + Uri.encode(slug, "_");
-        if (page > 1) base += "/p" + page;
-        return base + "?duration=" + duration + "&s=" + sort;
+        if (page > 1 || forcePageSuffix) base += "/p" + page;
+        return base + "?duration=" + Uri.encode(duration) + "&s=" + Uri.encode(sort);
     }
 
     public void loadMetadata(Movie m, boolean allowWeb, MetadataListener listener) {

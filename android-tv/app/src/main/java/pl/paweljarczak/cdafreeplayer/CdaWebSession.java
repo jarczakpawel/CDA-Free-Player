@@ -26,6 +26,9 @@ public final class CdaWebSession {
     }
 
     private static final long INTERACTIVE_GRACE_MS = 2200;
+    private static final long NORMAL_SETTLE_MS = 350;
+    private static final long SEARCH_SETTLE_MS = 3000;
+    private static final long INSPECT_RETRY_MS = 220;
     private static final long WARM_IDLE_MS = 60_000;
 
     private static final class Job {
@@ -41,7 +44,7 @@ public final class CdaWebSession {
     private final Queue<Job> jobs = new ArrayDeque<>();
     private WebView web;
     private Job current;
-    private long started;
+    private long started, cleanSince;
     private boolean shown;
     private Runnable destroyTask;
 
@@ -113,6 +116,7 @@ public final class CdaWebSession {
         }
         ensureWeb();
         started = SystemClock.elapsedRealtime();
+        cleanSince = 0L;
         shown = false;
         overlay.setVisibility(View.INVISIBLE);
         current.cb.onVerification(false);
@@ -129,16 +133,33 @@ public final class CdaWebSession {
         web.evaluateJavascript("(function(){return document.documentElement?document.documentElement.outerHTML:'';})()", value -> {
             if (job != current || web == null) return;
             String html = decode(value);
+            long now = SystemClock.elapsedRealtime();
             if (isChallenge(html)) {
-                if (!shown && SystemClock.elapsedRealtime() - started > INTERACTIVE_GRACE_MS) {
+                cleanSince = 0L;
+                if (!shown && now - started > INTERACTIVE_GRACE_MS) {
                     shown = true;
                     overlay.setVisibility(View.VISIBLE);
                     web.requestFocus();
                     job.cb.onVerification(true);
                 }
-                h.postDelayed(this::inspect, 250);
+                h.postDelayed(this::inspect, INSPECT_RETRY_MS);
                 return;
             }
+
+            // onPageFinished can fire before CDA has populated a search result grid,
+            // especially on older Android TV WebViews. Do not snapshot a transient
+            // empty DOM and then cache it as "0 films". Wait briefly for the normal
+            // page to settle; search pages get a longer bounded grace window.
+            if (cleanSince == 0L) cleanSince = now;
+            long cleanFor = now - cleanSince;
+            boolean search = isSearchUrl(job.url);
+            long settle = search ? SEARCH_SETTLE_MS : NORMAL_SETTLE_MS;
+            if (cleanFor < NORMAL_SETTLE_MS ||
+                    (search && !hasSearchResultSignal(html) && cleanFor < settle)) {
+                h.postDelayed(this::inspect, INSPECT_RETRY_MS);
+                return;
+            }
+
             overlay.setVisibility(View.GONE);
             CookieManager.getInstance().flush();
             job.cb.onHtml(html);
@@ -195,6 +216,21 @@ public final class CdaWebSession {
         if (destroyTask != null) h.removeCallbacks(destroyTask);
         dropWeb();
         overlay.setVisibility(View.GONE);
+    }
+
+
+    private static boolean isSearchUrl(String url) {
+        return url != null && url.contains("/video/show/");
+    }
+
+    private static boolean hasSearchResultSignal(String html) {
+        String s = html == null ? "" : html.toLowerCase();
+        return s.contains("video-clip-wrapper") ||
+                s.contains("link-title-visit") ||
+                s.contains("href=\"/video/") ||
+                s.contains("href='/video/") ||
+                s.contains("href=\"https://www.cda.pl/video/") ||
+                s.contains("href='https://www.cda.pl/video/");
     }
 
     private static boolean isChallenge(String html) {
