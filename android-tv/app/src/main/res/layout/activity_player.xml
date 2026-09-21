@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#000000">
+    <androidx.media3.ui.PlayerView android:id="@+id/playerView" android:layout_width="match_parent" android:layout_height="match_parent" android:focusable="true" android:focusableInTouchMode="true" android:keepScreenOn="true" app:surface_type="surface_view" app:resize_mode="fit"/>
+    <LinearLayout android:id="@+id/playerRating" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="top|end" android:orientation="horizontal" android:gravity="center_vertical" android:padding="16dp" android:visibility="gone">
+        <pl.paweljarczak.cdafreeplayer.StarRatingView android:id="@+id/playerStars" android:layout_width="130dp" android:layout_height="30dp"/>
+        <TextView android:id="@+id/playerRatingExact" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text" android:textStyle="bold" android:paddingStart="8dp"/>
+    </LinearLayout>
+    <TextView android:id="@+id/seekHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center" android:background="#C020242C" android:textColor="@color/text" android:textSize="23sp" android:textStyle="bold" android:padding="14dp" android:visibility="gone"/>
+    <LinearLayout android:id="@+id/osdPanel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" android:orientation="vertical" android:padding="18dp" android:background="#D015181D" android:visibility="gone">
+        <TextView android:id="@+id/playerTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/text" android:textSize="18sp" android:textStyle="bold"/>
+        <SeekBar android:id="@+id/seekBar" android:layout_width="match_parent" android:layout_height="40dp" android:max="1" android:focusable="true"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="32dp" android:orientation="horizontal">
+            <TextView android:id="@+id/currentTime" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:textColor="@color/text"/>
+            <TextView android:id="@+id/remainingTime" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/muted"/>
+            <TextView android:id="@+id/durationTime" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="end" android:textColor="@color/text"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:orientation="horizontal" android:gravity="center_vertical">
+            <Button android:id="@+id/playerFavorite" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="wrap_content" android:layout_height="46dp" android:text="♡ Ulubione"/>
+            <Button android:id="@+id/playerDescription" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="wrap_content" android:layout_height="46dp" android:layout_marginStart="6dp" android:text="Opis"/>
+            <Button android:id="@+id/playerComments" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="wrap_content" android:layout_height="46dp" android:layout_marginStart="6dp" android:text="Komentarze"/>
+            <Button android:id="@+id/playerQuality" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="wrap_content" android:layout_height="46dp" android:layout_marginStart="6dp" android:text="Jakość: Auto"/>
+        </LinearLayout>
+    </LinearLayout>
+    <FrameLayout android:id="@+id/securityOverlay" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#F0101216" android:visibility="gone">
+        <TextView android:layout_width="match_parent" android:layout_height="58dp" android:text="Weryfikacja zabezpieczeń CDA" android:textColor="@color/text" android:textSize="19sp" android:textStyle="bold" android:gravity="center_vertical" android:paddingHorizontal="18dp"/>
+        <FrameLayout android:id="@+id/securityHost" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_marginTop="58dp"/>
+    </FrameLayout>
+</FrameLayout>

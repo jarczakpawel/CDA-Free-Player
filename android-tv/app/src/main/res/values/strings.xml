@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">CDA Free Player</string>
+    <string name="author_name">Paweł Jarczak</string>
+    <string name="repository_url">https://github.com/jarczakpawel/CDA-Free-Player</string>
+</resources>

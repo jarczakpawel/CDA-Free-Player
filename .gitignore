@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+*.db
+*.sqlite*
+.DS_Store
+Thumbs.db
+build/
+dist/
+*.spec
+android-tv/.gradle/
+android-tv/app/build/
+android-tv/local.properties
+android-tv/*.jks
+android-tv/*.keystore
+*.icns

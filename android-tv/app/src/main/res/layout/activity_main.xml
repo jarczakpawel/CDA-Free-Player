@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/bg">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="horizontal">
+        <FrameLayout android:id="@+id/sideContainer" android:layout_width="292dp" android:layout_height="match_parent" android:background="@color/panel">
+            <LinearLayout android:id="@+id/navPanel" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="14dp">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="@string/app_name" android:textColor="@color/text" android:textStyle="bold" android:textSize="28sp" android:paddingBottom="14dp"/>
+                <Button android:id="@+id/recent" style="?android:attr/buttonStyle" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="48dp" android:text="Ostatnio oglądane"/>
+                <Button android:id="@+id/favorites" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="5dp" android:text="Ulubione"/>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Szukaj ręcznie" android:textColor="@color/muted" android:textStyle="bold" android:paddingTop="16dp"/>
+                <EditText android:id="@+id/manualQuery" android:layout_width="match_parent" android:layout_height="46dp" android:singleLine="true" android:imeOptions="actionSearch" android:textColor="@color/text" android:textColorHint="#6F7783" android:hint="np. lektor 1988" android:background="@drawable/button_bg" android:paddingHorizontal="10dp"/>
+                <Button android:id="@+id/manualSearch" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="5dp" android:text="Szukaj"/>
+                <Button android:id="@+id/settingsButton" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="42dp" android:layout_marginTop="10dp" android:text="⚙ Ustawienia"/>
+                <Space android:layout_width="1dp" android:layout_height="0dp" android:layout_weight="1"/>
+                <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Gotowe" android:textColor="@color/muted" android:textSize="12sp" android:padding="8dp"/>
+            </LinearLayout>
+
+            <LinearLayout android:id="@+id/detailPanel" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="12dp" android:visibility="gone">
+                <ImageView android:id="@+id/detailThumb" android:layout_width="match_parent" android:layout_height="145dp" android:scaleType="centerCrop" android:background="#252A33"/>
+                <TextView android:id="@+id/detailTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/text" android:textStyle="bold" android:textSize="16sp" android:maxLines="3" android:paddingTop="8dp"/>
+                <LinearLayout android:id="@+id/detailRatingRow" android:layout_width="match_parent" android:layout_height="32dp" android:orientation="horizontal" android:gravity="center_vertical">
+                    <pl.paweljarczak.cdafreeplayer.StarRatingView android:id="@+id/detailStars" android:layout_width="116dp" android:layout_height="28dp" android:visibility="gone"/>
+                    <TextView android:id="@+id/detailRatingExact" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text" android:textStyle="bold"/>
+                </LinearLayout>
+                <TextView android:id="@+id/detailSources" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/muted" android:textSize="11sp"/>
+                <TextView android:id="@+id/detailTime" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/muted" android:textSize="11sp" android:paddingTop="3dp"/>
+                <Button android:id="@+id/detailFavorite" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="43dp" android:layout_marginTop="7dp" android:text="♡ Ulubione"/>
+                <Button android:id="@+id/detailDescription" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="43dp" android:layout_marginTop="4dp" android:text="Opis"/>
+                <Button android:id="@+id/detailComments" android:background="@drawable/button_bg" android:textColor="@color/text" android:layout_width="match_parent" android:layout_height="43dp" android:layout_marginTop="4dp" android:text="Komentarze"/>
+                <TextView android:id="@+id/detailDescriptionPreview" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:textColor="@color/text" android:textSize="12sp" android:paddingTop="8dp" android:maxLines="12"/>
+            </LinearLayout>
+        </FrameLayout>
+
+        <LinearLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:orientation="vertical" android:padding="10dp">
+            <HorizontalScrollView android:id="@+id/yearScroll" android:layout_width="match_parent" android:layout_height="54dp" android:scrollbars="none" android:fillViewport="false">
+                <LinearLayout android:id="@+id/yearRow" android:layout_width="wrap_content" android:layout_height="match_parent" android:orientation="horizontal" android:gravity="center_vertical"/>
+            </HorizontalScrollView>
+            <LinearLayout android:id="@+id/sortRow" android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal"/>
+            <LinearLayout android:id="@+id/durationRow" android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="40dp" android:orientation="horizontal" android:gravity="center_vertical">
+                <TextView android:id="@+id/resultsTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:textColor="@color/text" android:textSize="18sp" android:textStyle="bold"/>
+                <Button android:id="@+id/removeCollection" android:layout_width="wrap_content" android:layout_height="36dp" android:background="@drawable/button_bg" android:textColor="#FF7B89" android:textSize="11sp" android:visibility="gone"/>
+                <TextView android:id="@+id/resultCount" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/muted" android:paddingStart="8dp"/>
+            </LinearLayout>
+            <androidx.recyclerview.widget.RecyclerView android:id="@+id/grid" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:clipToPadding="false" android:paddingBottom="12dp" android:descendantFocusability="afterDescendants"/>
+            <LinearLayout android:id="@+id/loadingBar" android:layout_width="match_parent" android:layout_height="34dp" android:orientation="horizontal" android:gravity="center_vertical" android:visibility="gone">
+                <ProgressBar android:layout_width="22dp" android:layout_height="22dp"/>
+                <TextView android:id="@+id/loadingText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/muted" android:paddingStart="8dp"/>
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <FrameLayout android:id="@+id/securityOverlay" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#F0101216" android:visibility="gone" android:focusable="true">
+        <TextView android:id="@+id/securityTitle" android:layout_width="match_parent" android:layout_height="58dp" android:text="Weryfikacja zabezpieczeń CDA" android:textColor="@color/text" android:textSize="19sp" android:textStyle="bold" android:gravity="center_vertical" android:paddingHorizontal="18dp"/>
+        <FrameLayout android:id="@+id/securityHost" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_marginTop="58dp"/>
+    </FrameLayout>
+</FrameLayout>

@@ -1,0 +1,10 @@
+<resources>
+    <color name="bg">#101216</color>
+    <color name="panel">#171A20</color>
+    <color name="panel2">#1F232B</color>
+    <color name="card">#20242C</color>
+    <color name="text">#F2F2F2</color>
+    <color name="muted">#AEB4BF</color>
+    <color name="accent">#55AAFF</color>
+    <color name="gold">#FFD22E</color>
+</resources>
