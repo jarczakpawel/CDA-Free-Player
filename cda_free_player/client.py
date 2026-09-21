@@ -1060,7 +1060,6 @@ class CdaClient:
         sort_key,
         duration_key,
         page,
-        force_page_suffix=False,
     ):
         slug = re.sub(
             r"[\\/ ]+",
@@ -1068,16 +1067,14 @@ class CdaClient:
             query.strip(),
         ).lower()
 
+        # CDA's canonical paged catalogue works as /p1, /p2, ... .
+        # Use it from the first request on every platform instead of probing
+        # the unsuffixed route and retrying after an empty response.
         base = (
             f"{BASE}/video/show/"
             f"{quote(slug, safe='_')}"
+            f"/p{page}"
         )
-
-        if (
-            page > 1
-            or force_page_suffix
-        ):
-            base += f"/p{page}"
 
         return (
             f"{base}?duration={quote(duration_key)}"

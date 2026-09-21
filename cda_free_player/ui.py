@@ -2400,59 +2400,6 @@ class App:
                 text
             )
 
-            if (
-                page == 1
-                and not videos
-            ):
-                retry_url = (
-                    self.client.search_url(
-                        query,
-                        sort_key,
-                        duration_key,
-                        page,
-                        force_page_suffix=True,
-                    )
-                )
-
-                if retry_url != url:
-                    log_event(
-                        "search_p1_retry",
-                        query=query,
-                        first_url=url,
-                        retry_url=retry_url,
-                    )
-
-                    retry_text, retry_source = (
-                        self.client.get_html(
-                            retry_url,
-                            True,
-                            cancel_event=cancel_event,
-                        )
-                    )
-
-                    retry_videos, retry_stats = (
-                        parse_results(
-                            retry_text
-                        )
-                    )
-
-                    if (
-                        retry_videos
-                        or retry_stats.get(
-                            "raw",
-                            0,
-                        )
-                        > stats.get(
-                            "raw",
-                            0,
-                        )
-                    ):
-                        videos = retry_videos
-                        stats = retry_stats
-                        source = (
-                            f"{retry_source}-p1"
-                        )
-
             self.db.save_search_page(
                 query,
                 sort_key,

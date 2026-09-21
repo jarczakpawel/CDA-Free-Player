@@ -152,8 +152,15 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         });
         h.root.setOnKeyListener((v, key, event) -> {
             int p = h.getBindingAdapterPosition();
-            if (p == RecyclerView.NO_POSITION) return false;
-            if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_LEFT && p % columns == 0) {
+            if (p == RecyclerView.NO_POSITION || event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if ((key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER || key == KeyEvent.KEYCODE_NUMPAD_ENTER)
+                    && event.getRepeatCount() == 0) {
+                // Do not rely on a vendor TV image translating DPAD_CENTER into
+                // View.performClick(). Some old operator boxes only deliver the key.
+                listener.onClick(m, p);
+                return true;
+            }
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT && p % columns == 0) {
                 listener.onLeftEdge(m, p);
                 return true;
             }

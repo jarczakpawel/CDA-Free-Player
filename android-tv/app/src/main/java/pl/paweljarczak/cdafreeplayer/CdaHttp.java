@@ -4,8 +4,12 @@ import android.content.Context;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -30,10 +34,8 @@ public final class CdaHttp {
     }
 
     /**
-     * Desktop first-run search is deliberately bootstrapped through a real WebView.
-     * Do the same on Android: a naked HTTP request can receive a valid HTTP 200 page
-     * without the actual catalogue (consent/anti-bot/mobile bootstrap), which used to
-     * be cached as "0 films" for six hours.
+     * A fresh Android install is bootstrapped through WebView. A naked HTTP 200
+     * can be a consent/bootstrap page instead of the actual CDA catalogue.
      */
     public boolean hasSession(String url) {
         try {
@@ -45,61 +47,136 @@ public final class CdaHttp {
     }
 
     public Result get(String url, RequestToken token) throws Exception {
-        if (token != null && token.isCancelled()) throw new InterruptedException();
+        checkCancelled(token);
+        HttpURLConnection c = open(url, "GET", "https://www.cda.pl/");
+        int status = c.getResponseCode();
+        String body = readBody(c, status, token);
+        syncCookies(url, c);
 
+        Result r = new Result();
+        r.status = status;
+        r.body = body;
+        r.challenge = isChallenge(status, body);
+        c.disconnect();
+        return r;
+    }
+
+    /**
+     * Resolve one quality exactly like the proven desktop client: JSON-RPC
+     * videoGetLink against the public movie page, using the same WebView cookie
+     * jar, User-Agent and Referer. This does not bypass Premium; callers reject
+     * player_data.premium before this method is reached.
+     */
+    public String videoGetLink(String pageUrl, String videoId, PlayerData data,
+                               Object qualityValue, RequestToken token) throws Exception {
+        checkCancelled(token);
+        if (data == null || data.premium || data.ts == null || data.ts == JSONObject.NULL || data.hash2.isEmpty()) return "";
+
+        JSONObject request = new JSONObject();
+        request.put("jsonrpc", "2.0");
+        request.put("method", "videoGetLink");
+        JSONArray params = new JSONArray();
+        params.put(videoId);
+        params.put(qualityValue == null ? JSONObject.NULL : qualityValue);
+        params.put(data.ts);
+        params.put(data.hash2);
+        params.put(new JSONObject());
+        request.put("params", params);
+        request.put("id", 2);
+
+        byte[] payload = request.toString().getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection c = open(pageUrl, "POST", pageUrl);
+        c.setDoOutput(true);
+        c.setRequestProperty("Accept", "application/json, text/plain, */*");
+        // Match the already proven desktop request as closely as possible.
+        c.setRequestProperty("Content-Type", "application/json");
+        c.setRequestProperty("X-Requested-With", "XMLHttpRequest");
+        c.setFixedLengthStreamingMode(payload.length);
+
+        try (OutputStream out = c.getOutputStream()) {
+            out.write(payload);
+        }
+
+        int status = c.getResponseCode();
+        String body = readBody(c, status, token);
+        syncCookies(pageUrl, c);
+        c.disconnect();
+        if (status != 200 || body.isEmpty()) return "";
+
+        try {
+            JSONObject root = new JSONObject(body);
+            JSONObject result = root.optJSONObject("result");
+            if (result == null) return "";
+            String state = result.optString("status", "");
+            if (!state.isEmpty() && !"ok".equalsIgnoreCase(state)) return "";
+            return normalizeStreamUrl(result.optString("resp", ""));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private HttpURLConnection open(String url, String method, String referer) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(12_000);
         c.setReadTimeout(20_000);
         c.setInstanceFollowRedirects(true);
+        c.setRequestMethod(method);
         c.setRequestProperty("User-Agent", userAgent());
         c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         c.setRequestProperty("Accept-Language", "pl-PL,pl;q=0.9,en;q=0.7");
-        c.setRequestProperty("Upgrade-Insecure-Requests", "1");
-        c.setRequestProperty("Referer", "https://www.cda.pl/");
+        c.setRequestProperty("Referer", referer);
+        if ("GET".equals(method)) c.setRequestProperty("Upgrade-Insecure-Requests", "1");
 
-        String cookie = CookieManager.getInstance().getCookie(url);
-        if (cookie != null && !cookie.isEmpty()) c.setRequestProperty("Cookie", cookie);
+        try {
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null && !cookie.isEmpty()) c.setRequestProperty("Cookie", cookie);
+        } catch (Exception ignored) {}
+        return c;
+    }
 
-        int status = c.getResponseCode();
+    private static String readBody(HttpURLConnection c, int status, RequestToken token) throws Exception {
         InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
         ByteArrayOutputStream b = new ByteArrayOutputStream();
         if (in != null) {
-            byte[] buf = new byte[16_384];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                if (token != null && token.isCancelled()) {
-                    c.disconnect();
-                    throw new InterruptedException();
+            try (InputStream src = in) {
+                byte[] buf = new byte[16_384];
+                int n;
+                while ((n = src.read(buf)) > 0) {
+                    checkCancelled(token);
+                    b.write(buf, 0, n);
                 }
-                b.write(buf, 0, n);
             }
-            in.close();
         }
+        return b.toString(StandardCharsets.UTF_8.name());
+    }
 
-        // Keep WebView and direct HTTP on one cookie jar. This matters after CDA
-        // rotates a clearance/session cookie in an ordinary HTTP response.
+    private static void checkCancelled(RequestToken token) throws InterruptedException {
+        if (token != null && token.isCancelled()) throw new InterruptedException();
+    }
+
+    private static String normalizeStreamUrl(String url) {
+        if (url == null) return "";
+        String out = url.trim();
+        if (out.startsWith("//")) out = "https:" + out;
+        if (!out.startsWith("http://") && !out.startsWith("https://")) return "";
+        return out;
+    }
+
+    private static void syncCookies(String url, HttpURLConnection c) {
         try {
             Map<String, List<String>> headers = c.getHeaderFields();
-            if (headers != null) {
-                for (Map.Entry<String, List<String>> e : headers.entrySet()) {
-                    String name = e.getKey();
-                    if (name == null || !"set-cookie".equalsIgnoreCase(name)) continue;
-                    List<String> values = e.getValue();
-                    if (values == null) continue;
-                    for (String value : values) {
-                        if (value != null && !value.isEmpty()) CookieManager.getInstance().setCookie(url, value);
-                    }
+            if (headers == null) return;
+            for (Map.Entry<String, List<String>> e : headers.entrySet()) {
+                String name = e.getKey();
+                if (name == null || !"set-cookie".equalsIgnoreCase(name)) continue;
+                List<String> values = e.getValue();
+                if (values == null) continue;
+                for (String value : values) {
+                    if (value != null && !value.isEmpty()) CookieManager.getInstance().setCookie(url, value);
                 }
-                CookieManager.getInstance().flush();
             }
+            CookieManager.getInstance().flush();
         } catch (Exception ignored) {}
-
-        Result r = new Result();
-        r.status = status;
-        r.body = b.toString(StandardCharsets.UTF_8.name());
-        r.challenge = isChallenge(status, r.body);
-        c.disconnect();
-        return r;
     }
 
     private static boolean isChallenge(int status, String body) {

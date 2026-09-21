@@ -119,8 +119,8 @@ public final class CdaRepository {
             return;
         }
 
-        String url = searchUrl(s.query, s.sort, s.duration, page, false);
-        fetchSearchAttempt(s, page, url, false, null);
+        String url = searchUrl(s.query, s.sort, s.duration, page);
+        fetchSearchAttempt(s, page, url);
     }
 
     private void handlePage(SearchSession s, int page, SearchPage p) {
@@ -140,36 +140,19 @@ public final class CdaRepository {
         enqueueEnrichment(p.movies);
     }
 
-    private void fetchSearchAttempt(SearchSession s, int page, String url, boolean forcedP1, SearchPage first) {
-        CdaGateway.Callback cb = new CdaGateway.Callback() {
+    private void fetchSearchAttempt(SearchSession s, int page, String url) {
+        gateway.fetch(url, true, s.token, new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
                 if (s.token.isCancelled()) return;
                 parser.execute(() -> {
                     SearchPage parsed = CdaParser.parseSearch(html);
-
-                    // Desktop already had this recovery and Android did not. CDA can
-                    // return an empty first form of /video/show/<query> while /p1 has
-                    // the actual catalogue. When page 1 is empty, force a real WebView
-                    // fetch of /p1 before accepting "0 films".
-                    if (page == 1 && !forcedP1 && parsed.movies.isEmpty()) {
-                        String retry = searchUrl(s.query, s.sort, s.duration, page, true);
-                        main.post(() -> {
-                            if (!s.token.isCancelled() && s == active)
-                                fetchSearchAttempt(s, page, retry, true, parsed);
-                        });
-                        return;
-                    }
-
-                    SearchPage chosen = parsed;
-                    if (first != null && parsed.movies.isEmpty() && parsed.raw <= first.raw) chosen = first;
-                    final SearchPage result = chosen;
-
-                    // Never persist a transient empty bootstrap/interstitial page.
-                    if (result.raw > 0 || !result.movies.isEmpty()) db.putSearch(s.key, page, result);
-                    db.decorateLocalState(result.movies);
+                    // /p1 is now the canonical first page. Do not cache a transient
+                    // empty bootstrap/interstitial page.
+                    if (parsed.raw > 0 || !parsed.movies.isEmpty()) db.putSearch(s.key, page, parsed);
+                    db.decorateLocalState(parsed.movies);
                     main.post(() -> {
                         if (via) resumeEnrichment();
-                        handlePage(s, page, result);
+                        handlePage(s, page, parsed);
                     });
                 });
             }
@@ -185,16 +168,12 @@ public final class CdaRepository {
                 s.listener.onVerification(interactive);
                 if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
             }
-        };
-
-        if (forcedP1) gateway.fetchWeb(url, s.token, cb);
-        else gateway.fetch(url, true, s.token, cb);
+        });
     }
 
-    private static String searchUrl(String q, String sort, String duration, int page, boolean forcePageSuffix) {
+    private static String searchUrl(String q, String sort, String duration, int page) {
         String slug = q.trim().toLowerCase(Locale.ROOT).replaceAll("[\\/ ]+", "_");
-        String base = "https://www.cda.pl/video/show/" + Uri.encode(slug, "_");
-        if (page > 1 || forcePageSuffix) base += "/p" + page;
+        String base = "https://www.cda.pl/video/show/" + Uri.encode(slug, "_") + "/p" + Math.max(1, page);
         return base + "?duration=" + Uri.encode(duration) + "&s=" + Uri.encode(sort);
     }
 
@@ -329,44 +308,87 @@ public final class CdaRepository {
 
     public void loadPlayer(Movie m, PlayerListener listener) {
         CachedPlayer hit = getCachedPlayer(m.id);
-        if (hit != null) {
+        if (hit != null && validPlayer(hit.data)) {
             listener.onPlayer(hit.data, hit.metadata);
             return;
         }
         RequestToken token = new RequestToken();
-        gateway.fetch(m.url, true, token, new CdaGateway.Callback() {
+        fetchPlayerAttempt(m, token, listener, false);
+    }
+
+    private void fetchPlayerAttempt(Movie m, RequestToken token, PlayerListener listener, boolean forceWeb) {
+        CdaGateway.Callback cb = new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
+                if (token.isCancelled()) return;
                 parser.execute(() -> {
-                    PlayerData pd = CdaParser.parsePlayerData(html);
                     MovieMetadata md = CdaParser.parseMetadata(html);
+                    PlayerData parsed = CdaParser.parsePlayerData(html);
                     db.saveMetadata(m.id, md);
-                    if (!validPlayer(pd)) {
-                        main.post(() -> listener.onError(playerError(pd)));
+
+                    if (parsed != null && parsed.premium) {
+                        main.post(() -> listener.onError("Materiał Premium lub niedostępny"));
                         return;
                     }
-                    cachePlayer(m.id, pd, md);
+
+                    PlayerData resolved = parsed;
+                    if (resolved != null) {
+                        try {
+                            resolved = gateway.resolvePlayer(m, resolved, token);
+                        } catch (InterruptedException ignored) {
+                            return;
+                        } catch (Exception ignored) {
+                            // A ready manifest/file can still be played even if the
+                            // optional videoGetLink quality resolver failed.
+                        }
+                    }
+
+                    if (resolved == null || !resolved.hasPlayableSource()) {
+                        if (!forceWeb) {
+                            main.post(() -> fetchPlayerAttempt(m, token, listener, true));
+                        } else {
+                            PlayerData finalParsed = resolved;
+                            main.post(() -> listener.onError(playerError(finalParsed)));
+                        }
+                        return;
+                    }
+
+                    PlayerData ready = resolved;
+                    cachePlayer(m.id, ready, md);
                     main.post(() -> {
                         if (via) resumeEnrichment();
-                        listener.onPlayer(pd, md);
+                        listener.onPlayer(ready, md);
                     });
                 });
             }
-            @Override public void onError(String e) { listener.onError(e); }
-            @Override public void onChallengeRequired() {}
+
+            @Override public void onError(String e) {
+                if (token.isCancelled()) return;
+                if (!forceWeb) fetchPlayerAttempt(m, token, listener, true);
+                else listener.onError("Nie udało się przygotować odtwarzania: " + e);
+            }
+
+            @Override public void onChallengeRequired() {
+                if (!forceWeb) fetchPlayerAttempt(m, token, listener, true);
+            }
+
             @Override public void onVerification(boolean interactive) {
                 if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
             }
-        });
+        };
+
+        if (forceWeb) gateway.fetchPlayerWeb(m.url, token, cb);
+        else gateway.fetch(m.url, true, token, cb);
     }
 
     private static boolean validPlayer(PlayerData p) {
-        return p != null && !p.premium && (p.type.isEmpty() || "plain".equals(p.type)) && (!p.dash.isEmpty() || !p.hls.isEmpty());
+        return p != null && !p.premium && p.hasPlayableSource();
     }
 
     private static String playerError(PlayerData p) {
-        if (p == null) return "Brak danych playera";
-        if (p.premium || (!p.type.isEmpty() && !"plain".equals(p.type))) return "Materiał Premium lub niedostępny";
-        return "Brak strumienia";
+        if (p == null) return "Brak danych playera CDA";
+        if (p.premium) return "Materiał Premium lub niedostępny";
+        if (p.canResolveQuality()) return "CDA nie zwróciło działającego linku do strumienia";
+        return "Brak darmowego strumienia w danych playera";
     }
 
     private synchronized void cachePlayer(String id, PlayerData p, MovieMetadata md) {

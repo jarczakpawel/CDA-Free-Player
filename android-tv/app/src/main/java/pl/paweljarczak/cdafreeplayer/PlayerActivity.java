@@ -14,6 +14,7 @@ import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -28,6 +29,7 @@ import androidx.media3.common.Player;
 import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
@@ -35,40 +37,58 @@ import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
-import androidx.media3.common.util.UnstableApi;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class PlayerActivity extends Activity {
+    private static final class Source {
+        final String url;
+        final String kind;
+        Source(String u, String k) { url = u; kind = k; }
+    }
+
     private final Handler h = new Handler(Looper.getMainLooper());
+    private final ArrayList<Source> sources = new ArrayList<>();
     private PlayerView playerView;
     private ExoPlayer player;
     private View osd, ratingTop, securityOverlay;
     private TextView seekHint, current, remaining, duration, title, ratingExact;
     private SeekBar seek;
     private StarRatingView stars;
-    private Button favorite, description, comments, quality;
+    private ImageButton favorite, description, comments;
+    private Button quality;
     private CdaRepository repo;
     private CdaDb db;
     private final Movie movie = new Movie();
     private final MovieMetadata metadata = new MovieMetadata();
-    private String dash = "", hls = "";
-    private boolean usingHls = false, osdVisible = false, scrubbing = false;
+    private String dash = "", hls = "", direct = "", resolved = "", resolvedKind = "";
+    private boolean osdVisible = false, scrubbing = false;
     private long initialResume = 0, lastPeriodicSave = 0;
+    private int sourceIndex = 0;
     private Runnable tick, hideOsd, hideHint;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         setContentView(R.layout.activity_player);
-        bind(); readIntent();
+        bind();
+        readIntent();
         repo = new CdaRepository(this, (FrameLayout) securityOverlay, findViewById(R.id.securityHost));
         db = repo.db();
-        setupPlayer(); setupOsd(); prepare(false, initialResume);
+        setupPlayer();
+        setupOsd();
+        buildSources();
+        if (sources.isEmpty()) {
+            Toast.makeText(this, "Brak strumienia do odtworzenia", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        prepareSource(0, initialResume);
     }
 
     private void bind() {
@@ -82,13 +102,15 @@ public final class PlayerActivity extends Activity {
 
     private void readIntent() {
         Intent i = getIntent();
-        movie.id = i.getStringExtra("id"); movie.title = i.getStringExtra("title"); movie.url = i.getStringExtra("url");
-        movie.duration = i.getStringExtra("durationText"); movie.imageUrl = i.getStringExtra("image");
-        dash = i.getStringExtra("dash"); hls = i.getStringExtra("hls"); initialResume = i.getLongExtra("resume", 0);
-        metadata.description = i.getStringExtra("description"); if (metadata.description == null) metadata.description = "";
+        movie.id = safe(i.getStringExtra("id")); movie.title = safe(i.getStringExtra("title")); movie.url = safe(i.getStringExtra("url"));
+        movie.duration = safe(i.getStringExtra("durationText")); movie.imageUrl = safe(i.getStringExtra("image"));
+        dash = safe(i.getStringExtra("dash")); hls = safe(i.getStringExtra("hls")); direct = safe(i.getStringExtra("direct"));
+        resolved = safe(i.getStringExtra("resolved")); resolvedKind = safe(i.getStringExtra("resolvedKind"));
+        initialResume = i.getLongExtra("resume", 0);
+        metadata.description = safe(i.getStringExtra("description"));
         if (i.hasExtra("rating")) metadata.rating = i.getDoubleExtra("rating", 0);
         if (i.hasExtra("cdaVotes")) metadata.cdaVotes = i.getIntExtra("cdaVotes", 0);
-        metadata.imdbRating = i.getStringExtra("imdbRating"); if (metadata.imdbRating == null) metadata.imdbRating = "";
+        metadata.imdbRating = safe(i.getStringExtra("imdbRating"));
         if (i.hasExtra("imdbVotes")) metadata.imdbVotes = i.getIntExtra("imdbVotes", 0);
         if (i.hasExtra("commentCount")) metadata.commentCount = i.getIntExtra("commentCount", 0);
     }
@@ -96,7 +118,7 @@ public final class PlayerActivity extends Activity {
     private void setupPlayer() {
         Map<String, String> headers = new HashMap<>();
         String cookie = CookieManager.getInstance().getCookie(movie.url);
-        if (cookie != null) headers.put("Cookie", cookie);
+        if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
         headers.put("Referer", movie.url);
 
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
@@ -114,9 +136,6 @@ public final class PlayerActivity extends Activity {
                 .build();
 
         DefaultRenderersFactory renderers = new DefaultRenderersFactory(this);
-        // Android 9-11 devices can benefit from async MediaCodec queueing when
-        // decoders otherwise stutter under load. This is particularly relevant
-        // for the Android TV 9 performance floor.
         if (Build.VERSION.SDK_INT <= 30) renderers.forceEnableMediaCodecAsynchronousQueueing();
 
         player = new ExoPlayer.Builder(this, renderers)
@@ -135,26 +154,52 @@ public final class PlayerActivity extends Activity {
 
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
-                if (!usingHls && hls != null && !hls.isEmpty()) {
-                    long position = player.getCurrentPosition();
-                    usingHls = true;
-                    prepare(true, position);
+                long position = Math.max(initialResume, player.getCurrentPosition());
+                if (sourceIndex + 1 < sources.size()) {
+                    sourceIndex++;
+                    prepareSource(sourceIndex, position);
                 } else {
-                    Toast.makeText(PlayerActivity.this, "Błąd odtwarzania: " + error.getErrorCodeName(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(PlayerActivity.this,
+                            "Błąd odtwarzania: " + error.getErrorCodeName(), Toast.LENGTH_LONG).show();
                 }
             }
             @Override public void onTracksChanged(Tracks tracks) { updateQualityLabel(); }
         });
     }
 
-    private void prepare(boolean useHls, long start) {
-        String url = useHls ? hls : dash;
-        if (url == null || url.isEmpty()) { url = useHls ? dash : hls; useHls = !useHls; }
-        if (url == null || url.isEmpty()) return;
-        usingHls = useHls;
-        MediaItem item = new MediaItem.Builder().setUri(Uri.parse(url))
-                .setMimeType(useHls ? MimeTypes.APPLICATION_M3U8 : MimeTypes.APPLICATION_MPD).build();
-        player.setMediaItem(item);
+    private void buildSources() {
+        sources.clear();
+        HashSet<String> seen = new HashSet<>();
+        addSource(seen, resolved, resolvedKind);
+        addSource(seen, dash, "dash");
+        addSource(seen, hls, "hls");
+        addSource(seen, direct, "direct");
+    }
+
+    private void addSource(HashSet<String> seen, String url, String kind) {
+        if (url == null) return;
+        String u = url.trim();
+        if (u.isEmpty() || !seen.add(u)) return;
+        String k = kind == null ? "" : kind.trim().toLowerCase(Locale.ROOT);
+        if (k.isEmpty()) k = inferKind(u);
+        sources.add(new Source(u, k));
+    }
+
+    private static String inferKind(String url) {
+        String clean = url.toLowerCase(Locale.ROOT).split("\\?", 2)[0];
+        if (clean.endsWith(".mpd")) return "dash";
+        if (clean.endsWith(".m3u8")) return "hls";
+        return "direct";
+    }
+
+    private void prepareSource(int index, long start) {
+        if (index < 0 || index >= sources.size()) return;
+        sourceIndex = index;
+        Source src = sources.get(index);
+        MediaItem.Builder b = new MediaItem.Builder().setUri(Uri.parse(src.url));
+        if ("dash".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_MPD);
+        else if ("hls".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_M3U8);
+        player.setMediaItem(b.build(), true);
         player.prepare();
         if (start > 5_000) player.seekTo(start);
         player.play();
@@ -163,14 +208,17 @@ public final class PlayerActivity extends Activity {
     private void setupOsd() {
         title.setText(movie.title);
         movie.favorite = db.isFavorite(movie.id);
-        favorite.setText(movie.favorite ? "♥ Usuń z ulubionych" : "♡ Ulubione");
+        updateFavoriteIcon();
         favorite.setOnClickListener(v -> {
             movie.favorite = db.toggleFavorite(movie);
-            favorite.setText(movie.favorite ? "♥ Usuń z ulubionych" : "♡ Ulubione"); resetHide();
+            updateFavoriteIcon();
+            resetHide();
         });
+        description.setContentDescription("Opis");
         description.setOnClickListener(v -> { TvDialogs.text(this, "Opis", metadata.description); resetHide(); });
-        comments.setText(metadata.commentCount == null ? "Komentarze" : "Komentarze (" + metadata.commentCount + ")");
-        comments.setOnClickListener(v -> loadComments()); quality.setOnClickListener(v -> showQuality());
+        updateCommentsDescription(metadata.commentCount);
+        comments.setOnClickListener(v -> loadComments());
+        quality.setOnClickListener(v -> showQuality());
         if (metadata.rating != null) {
             ratingTop.setVisibility(View.VISIBLE); stars.setRating(metadata.rating);
             ratingExact.setText(String.format(Locale.US, "%.1f / 5", metadata.rating));
@@ -214,6 +262,15 @@ public final class PlayerActivity extends Activity {
         hideHint = () -> seekHint.setVisibility(View.GONE);
     }
 
+    private void updateFavoriteIcon() {
+        favorite.setImageResource(movie.favorite ? R.drawable.ic_favorite : R.drawable.ic_favorite_border);
+        favorite.setContentDescription(movie.favorite ? "Usuń z ulubionych" : "Dodaj do ulubionych");
+    }
+
+    private void updateCommentsDescription(Integer count) {
+        comments.setContentDescription(count == null ? "Komentarze" : "Komentarze: " + count);
+    }
+
     private void showOsd() { osdVisible = true; osd.setVisibility(View.VISIBLE); seek.requestFocus(); resetHide(); }
     private void hideOsd() { osdVisible = false; osd.setVisibility(View.GONE); playerView.requestFocus(); }
     private void resetHide() { h.removeCallbacks(hideOsd); h.postDelayed(hideOsd, 7000); }
@@ -240,10 +297,10 @@ public final class PlayerActivity extends Activity {
     }
 
     private void loadComments() {
-        comments.setText("Komentarze…");
+        comments.setContentDescription("Komentarze — wczytywanie");
         repo.loadComments(movie, new CdaRepository.CommentsListener() {
-            @Override public void onComments(ArrayList<CommentItem> c) { comments.setText("Komentarze (" + c.size() + ")"); TvDialogs.comments(PlayerActivity.this, c); resetHide(); }
-            @Override public void onError(String e) { comments.setText("Komentarze"); Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show(); }
+            @Override public void onComments(ArrayList<CommentItem> c) { updateCommentsDescription(c.size()); TvDialogs.comments(PlayerActivity.this, c); resetHide(); }
+            @Override public void onError(String e) { updateCommentsDescription(metadata.commentCount); Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show(); }
         });
     }
 
@@ -295,7 +352,7 @@ public final class PlayerActivity extends Activity {
 
     @Override
     protected void onStop() {
-        if (player != null) db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
+        if (player != null && db != null) db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
         super.onStop();
     }
 
@@ -303,10 +360,12 @@ public final class PlayerActivity extends Activity {
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
         if (player != null) {
-            db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
+            if (db != null) db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
             player.release();
         }
         if (repo != null) repo.shutdown();
         super.onDestroy();
     }
+
+    private static String safe(String value) { return value == null ? "" : value; }
 }

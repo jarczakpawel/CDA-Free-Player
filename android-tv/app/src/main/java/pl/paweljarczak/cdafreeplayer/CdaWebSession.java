@@ -28,6 +28,7 @@ public final class CdaWebSession {
     private static final long INTERACTIVE_GRACE_MS = 2200;
     private static final long NORMAL_SETTLE_MS = 350;
     private static final long SEARCH_SETTLE_MS = 3000;
+    private static final long PLAYER_SETTLE_MS = 4500;
     private static final long INSPECT_RETRY_MS = 220;
     private static final long WARM_IDLE_MS = 60_000;
 
@@ -35,7 +36,10 @@ public final class CdaWebSession {
         final String url;
         final RequestToken token;
         final Callback cb;
-        Job(String u, RequestToken t, Callback c) { url = u; token = t; cb = c; }
+        final boolean expectPlayer;
+        Job(String u, RequestToken t, Callback c, boolean player) {
+            url = u; token = t; cb = c; expectPlayer = player;
+        }
     }
 
     private final Activity activity;
@@ -94,7 +98,15 @@ public final class CdaWebSession {
     }
 
     public void fetch(String url, RequestToken token, Callback cb) {
-        jobs.add(new Job(url, token, cb));
+        enqueue(new Job(url, token, cb, false));
+    }
+
+    public void fetchPlayer(String url, RequestToken token, Callback cb) {
+        enqueue(new Job(url, token, cb, true));
+    }
+
+    private void enqueue(Job job) {
+        jobs.add(job);
         if (current == null) startNext();
     }
 
@@ -130,7 +142,17 @@ public final class CdaWebSession {
             cancelCurrent();
             return;
         }
-        web.evaluateJavascript("(function(){return document.documentElement?document.documentElement.outerHTML:'';})()", value -> {
+        String snapshotScript = job.expectPlayer
+                ? "(function(){try{" +
+                  "var holder=document.querySelector('[player_data]');" +
+                  "if(!holder){var pd=window.player_data||window.playerData;" +
+                  "if(pd&&(typeof pd==='object'||typeof pd==='string')){" +
+                  "holder=document.createElement('div');holder.id='mediaplayer-runtime';" +
+                  "holder.style.display='none';holder.setAttribute('player_data',typeof pd==='string'?pd:JSON.stringify(pd));" +
+                  "(document.body||document.documentElement).appendChild(holder);}}" +
+                  "}catch(e){}return document.documentElement?document.documentElement.outerHTML:'';})()"
+                : "(function(){return document.documentElement?document.documentElement.outerHTML:'';})()";
+        web.evaluateJavascript(snapshotScript, value -> {
             if (job != current || web == null) return;
             String html = decode(value);
             long now = SystemClock.elapsedRealtime();
@@ -146,16 +168,12 @@ public final class CdaWebSession {
                 return;
             }
 
-            // onPageFinished can fire before CDA has populated a search result grid,
-            // especially on older Android TV WebViews. Do not snapshot a transient
-            // empty DOM and then cache it as "0 films". Wait briefly for the normal
-            // page to settle; search pages get a longer bounded grace window.
             if (cleanSince == 0L) cleanSince = now;
             long cleanFor = now - cleanSince;
             boolean search = isSearchUrl(job.url);
-            long settle = search ? SEARCH_SETTLE_MS : NORMAL_SETTLE_MS;
-            if (cleanFor < NORMAL_SETTLE_MS ||
-                    (search && !hasSearchResultSignal(html) && cleanFor < settle)) {
+            boolean waitForSearch = search && !hasSearchResultSignal(html) && cleanFor < SEARCH_SETTLE_MS;
+            boolean waitForPlayer = job.expectPlayer && !hasPlayerSignal(html) && cleanFor < PLAYER_SETTLE_MS;
+            if (cleanFor < NORMAL_SETTLE_MS || waitForSearch || waitForPlayer) {
                 h.postDelayed(this::inspect, INSPECT_RETRY_MS);
                 return;
             }
@@ -182,7 +200,7 @@ public final class CdaWebSession {
         scheduleDestroy();
     }
 
-    /** Playback gets all RAM/CPU. Cookies survive because they belong to CookieManager. */
+    /** Playback gets all RAM/CPU. Cookies survive in CookieManager. */
     public void releaseForPlayback() {
         current = null;
         jobs.clear();
@@ -218,7 +236,6 @@ public final class CdaWebSession {
         overlay.setVisibility(View.GONE);
     }
 
-
     private static boolean isSearchUrl(String url) {
         return url != null && url.contains("/video/show/");
     }
@@ -231,6 +248,14 @@ public final class CdaWebSession {
                 s.contains("href='/video/") ||
                 s.contains("href=\"https://www.cda.pl/video/") ||
                 s.contains("href='https://www.cda.pl/video/");
+    }
+
+    private static boolean hasPlayerSignal(String html) {
+        String s = html == null ? "" : html.toLowerCase();
+        return s.contains("player_data=") ||
+                s.contains("player_data =") ||
+                s.contains("manifest_apple") ||
+                s.contains("\"qualities\"") && s.contains("\"hash2\"");
     }
 
     private static boolean isChallenge(String html) {

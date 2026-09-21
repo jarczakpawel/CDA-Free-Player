@@ -1,6 +1,7 @@
 package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -12,10 +13,15 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -35,13 +41,14 @@ public final class MainActivity extends Activity {
     private ImageLoader images;
     private MovieAdapter adapter;
     private GridLayoutManager gridLayout;
-    private LinearLayout navPanel, detailPanel, yearRow, sortRow, durationRow;
+    private LinearLayout navPanel, detailPanel, yearRow;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
     private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailSources, detailTime, detailDescriptionPreview, detailRatingExact;
     private ImageView detailThumb;
     private StarRatingView detailStars;
-    private Button detailFavorite, detailDescription, detailComments, recent, favorites, manualSearch, settingsButton, removeCollection;
+    private ImageButton detailFavorite, detailDescription, detailComments, filterButton;
+    private Button recent, favorites, manualSearch, settingsButton, removeCollection;
     private EditText manualQuery;
     private View loadingBar;
     private FrameLayout securityOverlay;
@@ -52,6 +59,7 @@ public final class MainActivity extends Activity {
     private MovieMetadata focusedMeta;
     private Runnable metadataTask;
     private boolean launchedPlayer = false;
+    private boolean playerPreparing = false;
     private boolean removeMode = false;
     private String collectionMode = null;
     private UpdateManager updater;
@@ -82,7 +90,7 @@ public final class MainActivity extends Activity {
 
     private void bind() {
         navPanel = findViewById(R.id.navPanel); detailPanel = findViewById(R.id.detailPanel);
-        yearRow = findViewById(R.id.yearRow); sortRow = findViewById(R.id.sortRow); durationRow = findViewById(R.id.durationRow);
+        yearRow = findViewById(R.id.yearRow); filterButton = findViewById(R.id.filterButton);
         yearScroll = findViewById(R.id.yearScroll); grid = findViewById(R.id.grid); status = findViewById(R.id.status);
         resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
         loadingBar = findViewById(R.id.loadingBar); loadingText = findViewById(R.id.loadingText);
@@ -131,25 +139,136 @@ public final class MainActivity extends Activity {
             int year = n;
             Button b = tvButton(String.valueOf(year));
             b.setTag(year);
-            b.setOnClickListener(v -> { selectedYear = year; startSearch("lektor " + year, "Lektor " + year); });
+            b.setOnClickListener(v -> {
+                selectedYear = year;
+                startSearch("lektor " + year, "Lektor " + year);
+            });
             b.setOnFocusChangeListener((v, focused) -> { if (focused) keepYearVisible(v); });
+            b.setOnKeyListener((v, key, event) -> {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    filterButton.requestFocus();
+                    return true;
+                }
+                // The filter lives visually next to the carousel, but TV navigation
+                // reaches it by DOWN as requested, not by running off the last year.
+                return key == KeyEvent.KEYCODE_DPAD_RIGHT && year == max;
+            });
             yearRow.addView(b);
         }
     }
 
     private void setupFilters() {
+        updateFilterDescription();
+        filterButton.setOnClickListener(v -> showFilterDialog());
+        filterButton.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) {
+                focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                return true;
+            }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                focusFirstCard();
+                return true;
+            }
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
+            return false;
+        });
+    }
+
+    private void showFilterDialog() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(24), dp(8), dp(24), dp(4));
+
+        TextView sortTitle = new TextView(this);
+        sortTitle.setText("Sortowanie");
+        sortTitle.setTextColor(Color.WHITE);
+        sortTitle.setTextSize(16);
+        sortTitle.setPadding(0, dp(8), 0, dp(4));
+        root.addView(sortTitle);
+
+        RadioGroup sortGroup = new RadioGroup(this);
         String[][] sorts = {{"Najtrafniejszy", "best"}, {"Najnowsze", "date"}, {"Alfabetycznie", "alf"}};
         for (String[] x : sorts) {
-            Button b = tvButton(x[0]);
-            b.setOnClickListener(v -> { sort = x[1]; startSearch(query, resultsTitle.getText().toString()); });
-            sortRow.addView(b);
+            RadioButton rb = filterRadio(x[0], x[1], x[1].equals(sort));
+            sortGroup.addView(rb);
         }
+        root.addView(sortGroup);
+
+        TextView durationTitle = new TextView(this);
+        durationTitle.setText("Długość");
+        durationTitle.setTextColor(Color.WHITE);
+        durationTitle.setTextSize(16);
+        durationTitle.setPadding(0, dp(12), 0, dp(4));
+        root.addView(durationTitle);
+
+        RadioGroup durationGroup = new RadioGroup(this);
         String[][] durations = {{"Każda", "all"}, {"Krótkie <5 min", "krotkie"}, {"Średnie >20 min", "srednie"}, {"Długie >60 min", "dlugie"}};
         for (String[] x : durations) {
-            Button b = tvButton(x[0]);
-            b.setOnClickListener(v -> { duration = x[1]; startSearch(query, resultsTitle.getText().toString()); });
-            durationRow.addView(b);
+            RadioButton rb = filterRadio(x[0], x[1], x[1].equals(duration));
+            durationGroup.addView(rb);
         }
+        root.addView(durationGroup);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(root);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Sortowanie i długość")
+                .setView(scroll)
+                .setNegativeButton("Anuluj", null)
+                .setPositiveButton("Zastosuj", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String newSort = checkedTag(sortGroup, sort);
+            String newDuration = checkedTag(durationGroup, duration);
+            boolean changed = !newSort.equals(sort) || !newDuration.equals(duration);
+            sort = newSort;
+            duration = newDuration;
+            updateFilterDescription();
+            dialog.dismiss();
+            if (changed && collectionMode == null) {
+                startSearch(query, resultsTitle.getText().toString());
+            }
+        }));
+        dialog.setOnDismissListener(ignored -> filterButton.post(filterButton::requestFocus));
+        dialog.show();
+    }
+
+    private RadioButton filterRadio(String label, String value, boolean checked) {
+        RadioButton rb = new RadioButton(this);
+        rb.setText(label);
+        rb.setTextColor(Color.WHITE);
+        rb.setTextSize(15);
+        rb.setId(View.generateViewId());
+        rb.setTag(value);
+        rb.setChecked(checked);
+        rb.setFocusable(true);
+        rb.setMinHeight(dp(42));
+        return rb;
+    }
+
+    private static String checkedTag(RadioGroup group, String fallback) {
+        int id = group.getCheckedRadioButtonId();
+        if (id == -1) return fallback;
+        View v = group.findViewById(id);
+        Object tag = v == null ? null : v.getTag();
+        return tag == null ? fallback : tag.toString();
+    }
+
+    private void updateFilterDescription() {
+        String sortLabel = "best".equals(sort) ? "Najtrafniejszy" : "date".equals(sort) ? "Najnowsze" : "Alfabetycznie";
+        String durationLabel = "all".equals(duration) ? "Każda długość" : "krotkie".equals(duration) ? "<5 min" : "srednie".equals(duration) ? ">20 min" : ">60 min";
+        filterButton.setContentDescription("Filtry: " + sortLabel + ", " + durationLabel);
+    }
+
+    private void focusFirstCard() {
+        if (adapter.getItemCount() <= 0) return;
+        grid.scrollToPosition(0);
+        grid.post(() -> {
+            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(0);
+            if (vh != null) vh.itemView.requestFocus();
+        });
     }
 
     private void setupLeft() {
@@ -172,9 +291,8 @@ public final class MainActivity extends Activity {
         }
         detailFavorite.setOnClickListener(v -> {
             if (focused == null) return;
-            boolean favorite = repo.db().toggleFavorite(focused);
-            focused.favorite = favorite;
-            detailFavorite.setText(favorite ? "♥ Usuń z ulubionych" : "♡ Ulubione");
+            focused.favorite = repo.db().toggleFavorite(focused);
+            updateDetailFavoriteIcon();
             adapter.updateLocalState(focused);
         });
         detailDescription.setOnClickListener(v -> {
@@ -183,14 +301,24 @@ public final class MainActivity extends Activity {
             TvDialogs.text(this, "Opis", d);
         });
         detailComments.setOnClickListener(v -> loadComments());
-        for (View v : new View[]{detailFavorite, detailDescription, detailComments}) {
-            v.setOnKeyListener((x, key, event) -> {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                    restoreCard(); return true;
-                }
-                return false;
-            });
-        }
+
+        detailFavorite.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { detailDescription.requestFocus(); return true; }
+            return false;
+        });
+        detailDescription.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { detailFavorite.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { detailComments.requestFocus(); return true; }
+            return false;
+        });
+        detailComments.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { detailDescription.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { restoreCard(); return true; }
+            return false;
+        });
     }
 
     private void manualSearch() {
@@ -280,7 +408,7 @@ public final class MainActivity extends Activity {
         focused = m; showDetail(); detailTitle.setText(m.title); images.load(m.imageUrl, detailThumb);
         detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
         detailDescriptionPreview.setText(m.shortDescription);
-        detailFavorite.setText(m.favorite ? "♥ Usuń z ulubionych" : "♡ Ulubione");
+        updateDetailFavoriteIcon();
         applyMetadata(m, repo.db().getMetadata(m.id));
     }
 
@@ -302,7 +430,7 @@ public final class MainActivity extends Activity {
         if (md == null) {
             detailStars.setRating(m.rating);
             detailRatingExact.setText(m.rating == null ? "" : String.format(Locale.US, "%.1f / 5", m.rating));
-            detailSources.setText(""); detailComments.setText("Komentarze"); return;
+            detailSources.setText(""); updateDetailCommentsDescription(null); return;
         }
         Double rating = md.rating != null ? md.rating : m.rating;
         detailStars.setRating(rating);
@@ -316,7 +444,7 @@ public final class MainActivity extends Activity {
         }
         detailSources.setText(sources);
         if (!md.description.isEmpty()) detailDescriptionPreview.setText(md.description);
-        detailComments.setText(md.commentCount == null ? "Komentarze" : "Komentarze (" + md.commentCount + ")");
+        updateDetailCommentsDescription(md.commentCount);
     }
 
     private void loadComments() {
@@ -324,16 +452,35 @@ public final class MainActivity extends Activity {
         setStatus("Wczytywanie komentarzy…");
         repo.loadComments(focused, new CdaRepository.CommentsListener() {
             @Override public void onComments(ArrayList<CommentItem> comments) {
-                detailComments.setText("Komentarze (" + comments.size() + ")"); TvDialogs.comments(MainActivity.this, comments); setStatus("Gotowe");
+                updateDetailCommentsDescription(comments.size());
+                TvDialogs.comments(MainActivity.this, comments);
+                setStatus("Gotowe");
             }
-            @Override public void onError(String e) { setStatus(e); }
+            @Override public void onError(String e) {
+                setStatus(e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
         });
     }
 
+    private void updateDetailFavoriteIcon() {
+        if (focused == null) return;
+        detailFavorite.setImageResource(focused.favorite ? R.drawable.ic_favorite : R.drawable.ic_favorite_border);
+        detailFavorite.setContentDescription(focused.favorite ? "Usuń z ulubionych" : "Dodaj do ulubionych");
+    }
+
+    private void updateDetailCommentsDescription(Integer count) {
+        detailComments.setContentDescription(count == null ? "Komentarze" : "Komentarze, " + count);
+    }
+
     private void play(Movie m) {
+        if (playerPreparing) return;
+        playerPreparing = true;
         setStatus("Przygotowanie filmu…");
+        Toast.makeText(this, "Przygotowanie filmu…", Toast.LENGTH_SHORT).show();
         repo.loadPlayer(m, new CdaRepository.PlayerListener() {
             @Override public void onPlayer(PlayerData p, MovieMetadata md) {
+                playerPreparing = false;
                 long resume = repo.db().resumePosition(m.id);
                 repo.enterPlaybackMode();
                 images.trimForPlayback();
@@ -341,7 +488,8 @@ public final class MainActivity extends Activity {
                 Intent i = new Intent(MainActivity.this, PlayerActivity.class);
                 i.putExtra("id", m.id); i.putExtra("title", m.title); i.putExtra("url", m.url);
                 i.putExtra("durationText", m.duration); i.putExtra("image", m.imageUrl);
-                i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("resume", resume);
+                i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
+                i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);
                 if (md.rating != null) i.putExtra("rating", md.rating);
                 if (md.cdaVotes != null) i.putExtra("cdaVotes", md.cdaVotes);
@@ -350,7 +498,11 @@ public final class MainActivity extends Activity {
                 if (md.commentCount != null) i.putExtra("commentCount", md.commentCount);
                 startActivity(i); setStatus("Gotowe");
             }
-            @Override public void onError(String e) { setStatus(e); }
+            @Override public void onError(String e) {
+                playerPreparing = false;
+                setStatus("Błąd: " + e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
         });
     }
 

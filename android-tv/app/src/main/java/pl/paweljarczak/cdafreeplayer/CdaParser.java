@@ -7,6 +7,7 @@ import org.jsoup.select.Elements;
 import org.json.JSONObject;
 
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -245,8 +246,140 @@ public final class CdaParser {
         return out;
     }
 
-    public static PlayerData parsePlayerData(String html){
-        Document doc=Jsoup.parse(html); Element el=doc.selectFirst("div[id^=mediaplayer][player_data]"); if(el==null)return null; try{JSONObject root=new JSONObject(el.attr("player_data"));PlayerData p=new PlayerData();p.premium=root.optBoolean("premium",false);JSONObject v=root.optJSONObject("video");if(v==null)return p;p.type=v.optString("type","");p.dash=v.optString("manifest","");p.hls=v.optString("manifest_apple","");p.durationMs=v.optLong("duration",0L)*1000L;return p;}catch(Exception e){return null;}
+    public static PlayerData parsePlayerData(String html) {
+        Document doc = Jsoup.parse(html == null ? "" : html);
+        try {
+            JSONObject root = findPlayerRoot(html, doc);
+            if (root == null) return null;
+            PlayerData p = new PlayerData();
+            p.premium = root.optBoolean("premium", false);
+
+            JSONObject v = root.optJSONObject("video");
+            if (v == null) return p;
+
+            p.type = v.optString("type", "");
+            p.dash = normalizeStreamUrl(v.optString("manifest", ""));
+            p.hls = normalizeStreamUrl(v.optString("manifest_apple", ""));
+            p.direct = normalizeStreamUrl(v.optString("file", ""));
+            p.hash2 = v.optString("hash2", "");
+            p.durationMs = Math.max(0L, v.optLong("duration", 0L)) * 1000L;
+
+            p.ts = normalizeTs(v.opt("ts"));
+            if (p.ts == null) {
+                JSONObject api = root.optJSONObject("api");
+                if (api != null) p.ts = normalizeTs(api.opt("ts"));
+            }
+
+            JSONObject qualities = v.optJSONObject("qualities");
+            if (qualities != null) {
+                Iterator<String> keys = qualities.keys();
+                while (keys.hasNext()) {
+                    String label = keys.next();
+                    Object value = qualities.opt(label);
+                    if (value != null && value != JSONObject.NULL && !String.valueOf(value).trim().isEmpty())
+                        p.qualities.put(label, value);
+                }
+            }
+            return p;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static JSONObject findPlayerRoot(String html, Document doc) {
+        // Normal CDA desktop/mobile markup.
+        for (String selector : new String[]{
+                "div[id^=mediaplayer][player_data]", "[player_data]",
+                "[data-player-data]", "[data-player_data]"}) {
+            Element el = doc.selectFirst(selector);
+            if (el == null) continue;
+            for (String attr : new String[]{"player_data", "data-player-data", "data-player_data"}) {
+                String raw = el.attr(attr);
+                if (raw == null || raw.trim().isEmpty()) continue;
+                try { return new JSONObject(raw); } catch (Exception ignored) {}
+            }
+        }
+
+        // Some Android/mobile variants keep the same object in JavaScript
+        // instead of leaving player_data on the media-player DIV. Extract a
+        // balanced object after player_data/playerData without trying to parse
+        // arbitrary page scripts.
+        String rawHtml = html == null ? "" : html;
+        for (String marker : new String[]{"player_data", "playerData", "\\\"player_data\\\""}) {
+            int from = 0;
+            while (from < rawHtml.length()) {
+                int at = rawHtml.indexOf(marker, from);
+                if (at < 0) break;
+                int sep = findAssignmentSeparator(rawHtml, at + marker.length());
+                if (sep >= 0) {
+                    int brace = skipToObject(rawHtml, sep + 1);
+                    if (brace >= 0) {
+                        String object = balancedJsonObject(rawHtml, brace);
+                        if (object != null) {
+                            try { return new JSONObject(object); } catch (Exception ignored) {}
+                        }
+                    }
+                }
+                from = at + marker.length();
+            }
+        }
+        return null;
+    }
+
+    private static int findAssignmentSeparator(String s, int from) {
+        int limit = Math.min(s.length(), from + 96);
+        for (int i = from; i < limit; i++) {
+            char c = s.charAt(i);
+            if (c == '=' || c == ':') return i;
+            if (c == ';' || c == '<' || c == '>') break;
+        }
+        return -1;
+    }
+
+    private static int skipToObject(String s, int from) {
+        int limit = Math.min(s.length(), from + 48);
+        for (int i = from; i < limit; i++) {
+            char c = s.charAt(i);
+            if (c == '{') return i;
+            if (!Character.isWhitespace(c) && c != '(') return -1;
+        }
+        return -1;
+    }
+
+    private static String balancedJsonObject(String s, int start) {
+        int depth = 0;
+        boolean quoted = false, escaped = false;
+        char quote = 0;
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == quote) quoted = false;
+                continue;
+            }
+            if (c == '"' || c == '\'') { quoted = true; quote = c; continue; }
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return s.substring(start, i + 1);
+        }
+        return null;
+    }
+
+    private static Object normalizeTs(Object value) {
+        if (value == null || value == JSONObject.NULL) return null;
+        if (value instanceof Number) return ((Number) value).longValue();
+        String s = String.valueOf(value).trim();
+        if (s.isEmpty()) return null;
+        int cut = s.indexOf('_');
+        String prefix = cut > 0 ? s.substring(0, cut) : s;
+        try { return Long.parseLong(prefix); } catch (Exception ignored) { return value; }
+    }
+
+    private static String normalizeStreamUrl(String url) {
+        if (url == null) return "";
+        String out = url.trim();
+        if (out.startsWith("//")) return "https:" + out;
+        return out;
     }
 
     private static String clean(String html){if(html==null)return "";String s=html.replace("\\n","\n").replace("\\r","").replace("\\t"," ").replace("\\u003C","<").replace("\\u003E",">");Document d=Jsoup.parseBodyFragment(s);d.select("script,style,noscript,button").remove();String t=d.body().wholeText();return t.replace('\u00a0',' ').replaceAll("[ \\t]+"," ").replaceAll("\\n{3,}","\\n\\n").trim();}
