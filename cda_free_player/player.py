@@ -32,14 +32,79 @@ class Player:
             return None
         video = pdata["video"]
 
-        # Prefer the structured player_data source that Android TV also sees.
-        # If the MPD cannot be reduced to direct ranges, pass the whole MPD to mpv.
-        dash = self._normalize_stream_url(item["url"], video.get("manifest"))
-        if dash:
-            resolved = self._candidate_from_stream(item, dash, None, "auto", "player_data")
-            if resolved:
-                return resolved
+        # Desktop mpv/FFmpeg seeks most reliably when CDA gives us the concrete
+        # quality MP4 files (video + optional audio) behind a static MPD.  This
+        # is the path that historically gave the desktop build fast HTTP Range
+        # seeking.  Do not start with the adaptive player_data MPD: it can play
+        # correctly but FFmpeg may lose A/V sync after a long seek.
+        dash_fallbacks = []
+        hls_fallbacks = []
 
+        qualities = video.get("qualities", {})
+        if isinstance(qualities, dict):
+            candidates = []
+            for label, value in qualities.items():
+                match = re.search(r"(\d+)", str(label))
+                candidates.append((int(match.group(1)) if match else 0, str(label), value))
+            candidates.sort(reverse=True)
+
+            for height, label, value in candidates:
+                stream = self.client.post_video_get_link(item, pdata, value)
+                if not stream:
+                    continue
+                stream = self._normalize_stream_url(item["url"], stream)
+                if not stream:
+                    continue
+                clean = stream.lower().split("?", 1)[0]
+
+                if clean.endswith((".mp4", ".m4v")):
+                    return {
+                        "kind": "mp4",
+                        "quality": label,
+                        "video": stream,
+                        "audio": None,
+                        "source": "videoGetLink-direct",
+                    }
+
+                if clean.endswith(".mpd"):
+                    tracks = self._mpd_tracks(item, stream, height)
+                    if tracks:
+                        tracks["quality"] = label or tracks.get("quality", "auto")
+                        tracks["source"] = "videoGetLink-mp4-range"
+                        return tracks
+                    dash_fallbacks.append({
+                        "kind": "dash",
+                        "quality": label or f"{height}p",
+                        "video": stream,
+                        "audio": None,
+                        "source": "videoGetLink-dash-fallback",
+                    })
+                    continue
+
+                if clean.endswith(".m3u8"):
+                    selected = self._hls_candidate(item, stream)
+                    if selected:
+                        hls_fallbacks.append({
+                            "kind": "hls",
+                            "quality": label,
+                            "video": selected,
+                            "audio": None,
+                            "source": "videoGetLink-hls-fallback",
+                        })
+                    continue
+
+                if stream.startswith(("http://", "https://")):
+                    return {
+                        "kind": "mp4",
+                        "quality": label,
+                        "video": stream,
+                        "audio": None,
+                        "source": "videoGetLink-direct",
+                    }
+
+        # A direct file is also preferable to an adaptive manifest, but keep it
+        # after the quality resolver so we do not accidentally choose a lower
+        # quality generic file when CDA exposes a higher concrete quality.
         direct = self._normalize_stream_url(item["url"], video.get("file"))
         if direct and direct.startswith(("http://", "https://")):
             return {
@@ -50,35 +115,44 @@ class Player:
                 "source": "player_data-file",
             }
 
-        # Then try every quality endpoint. Do not stop on an unusable candidate.
-        qualities = video.get("qualities", {})
-        if isinstance(qualities, dict):
-            candidates = []
-            for label, value in qualities.items():
-                match = re.search(r"(\d+)", str(label))
-                candidates.append((int(match.group(1)) if match else 0, str(label), value))
-            candidates.sort(reverse=True)
-            for height, label, value in candidates:
-                stream = self.client.post_video_get_link(item, pdata, value)
-                if not stream:
-                    continue
-                resolved = self._candidate_from_stream(item, stream, height, label, "videoGetLink")
-                if resolved:
-                    return resolved
+        # Try to reduce the player_data DASH manifest to static MP4 Range files.
+        # Only if that is impossible keep the whole MPD as a last-resort DASH
+        # source.  This preserves playback for manifests which Media3 handles on
+        # Android while avoiding the FFmpeg DASH seek path whenever possible.
+        dash = self._normalize_stream_url(item["url"], video.get("manifest"))
+        if dash:
+            tracks = self._mpd_tracks(item, dash, None)
+            if tracks:
+                tracks["quality"] = tracks.get("quality", "auto-max")
+                tracks["source"] = "player_data-mp4-range"
+                return tracks
+            dash_fallbacks.append({
+                "kind": "dash",
+                "quality": "auto",
+                "video": dash,
+                "audio": None,
+                "source": "player_data-dash-fallback",
+            })
 
-        # Apple HLS is deliberately last on desktop. WebKit/WKWebView often exposes
-        # it as currentSrc even when the structured player_data also contains DASH.
         hls = self._normalize_stream_url(item["url"], video.get("manifest_apple"))
         if hls:
-            selected_hls = self._hls_candidate(item, hls)
-            if selected_hls:
-                return {
+            selected = self._hls_candidate(item, hls)
+            if selected:
+                hls_fallbacks.append({
                     "kind": "hls",
                     "quality": "auto",
-                    "video": selected_hls,
+                    "video": selected,
                     "audio": None,
-                    "source": "player_data-hls",
-                }
+                    "source": "player_data-hls-fallback",
+                })
+
+        # A whole DASH MPD is still a better fallback than Apple HLS on desktop
+        # for the CDA pages seen in testing.  Crucially, we reach this only when
+        # no seek-friendly concrete MP4/Range source exists.
+        if dash_fallbacks:
+            return dash_fallbacks[0]
+        if hls_fallbacks:
+            return hls_fallbacks[0]
         return None
 
     @staticmethod
@@ -91,35 +165,6 @@ class Player:
         if value.startswith("//"):
             return "https:" + value
         return urljoin(base_url, value)
-
-    def _candidate_from_stream(self, item, stream, height, label, source):
-        stream = self._normalize_stream_url(item["url"], stream)
-        if not stream:
-            return None
-        clean = stream.lower().split("?", 1)[0]
-        if clean.endswith((".mp4", ".m4v")):
-            return {"kind": "mp4", "quality": label, "video": stream, "audio": None, "source": source}
-        if clean.endswith(".mpd"):
-            resolved = self._mpd_tracks(item, stream, height)
-            if resolved:
-                resolved["quality"] = label or resolved.get("quality", "auto")
-                resolved["source"] = source + "-dash"
-                return resolved
-            return {
-                "kind": "dash",
-                "quality": label or (f"{height}p" if height else "auto"),
-                "video": stream,
-                "audio": None,
-                "source": source + "-dash-direct",
-            }
-        if clean.endswith(".m3u8"):
-            selected = self._hls_candidate(item, stream)
-            if selected:
-                return {"kind": "hls", "quality": label, "video": selected, "audio": None, "source": source + "-hls"}
-            return None
-        if stream.startswith(("http://", "https://")):
-            return {"kind": "mp4", "quality": label, "video": stream, "audio": None, "source": source + "-direct"}
-        return None
 
     def _hls_candidate(self, item, manifest_url):
         client = self.client.http_client()
@@ -177,12 +222,7 @@ class Player:
             )
 
             if root.findall(".//{*}SegmentTemplate") or root.findall(".//{*}SegmentList") or len(root.findall("{*}Period")) != 1:
-                return {
-                    "kind": "dash",
-                    "quality": f"{preferred_height}p" if preferred_height else "auto",
-                    "video": str(response.url),
-                    "audio": None,
-                }
+                return None
             parents = {child: parent for parent in root.iter() for child in parent}
             video_tracks = []
             audio_tracks = []
@@ -326,12 +366,7 @@ class Player:
                         )
 
             if not video_tracks:
-                return {
-                    "kind": "dash",
-                    "quality": f"{preferred_height}p" if preferred_height else "auto",
-                    "video": str(response.url),
-                    "audio": None,
-                }
+                return None
 
             if preferred_height:
                 exact = [
@@ -481,7 +516,7 @@ class Player:
             mode="w", encoding="utf-8", prefix="cdafp-input-", suffix=".conf", delete=False
         )
         input_path = input_file.name
-        input_file.write("ESC quit\nBS quit\n")
+        input_file.write("ESC quit\nBS quit\nLEFT seek -10 relative+keyframes\nRIGHT seek 10 relative+keyframes\n")
         input_file.close()
         command = [
             mpv, "--no-config", "--fs", "--force-window=yes", "--ytdl=no", "--hwdec=auto-safe",
@@ -522,6 +557,8 @@ class Player:
                 command[1:1] = ["--cookies=yes", "--cookies-file=" + cookie_path]
             try:
                 with log_path.open("w", encoding="utf-8") as log:
+                    log.write(f"CDAFP source={resolved.get('source', '')} kind={kind} quality={quality} start={position:.3f}\n")
+                    log.flush()
                     self.process = subprocess.Popen(
                         command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
