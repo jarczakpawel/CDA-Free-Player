@@ -23,6 +23,7 @@ public final class CdaHttp {
         public String finalUrl = "";
         public boolean challenge;
         public long elapsedMs;
+        public long retryAfterMs;
     }
 
     private final Context context;
@@ -108,6 +109,7 @@ public final class CdaHttp {
                 r.finalUrl = current;
                 r.challenge = isChallenge(status, body);
                 r.elapsedMs = SystemClock.elapsedRealtime() - started;
+                r.retryAfterMs = retryAfterMs(c.getHeaderField("Retry-After"));
                 if (!r.challenge && (status < 200 || status >= 300)) throw new java.io.IOException("CDA HTTP " + status);
                 return r;
             } finally {
@@ -234,6 +236,19 @@ public final class CdaHttp {
             }
             if (changed) CookieManager.getInstance().flush();
         } catch (Exception ignored) {}
+    }
+
+    private static long retryAfterMs(String value) {
+        if (value == null) return 0L;
+        String v = value.trim();
+        if (v.isEmpty()) return 0L;
+        try {
+            long seconds = Long.parseLong(v);
+            if (seconds <= 0L) return 0L;
+            return Math.min(seconds * 1000L, 60_000L);
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     private static boolean isChallenge(int status, String body) {

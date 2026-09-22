@@ -50,7 +50,7 @@ public final class CdaWebSession {
     private static final long SEARCH_SETTLE_MS = 2500;
     private static final long PLAYER_SETTLE_MS = 12000;
     private static final long INSPECT_RETRY_MS = 180;
-    private static final long CHALLENGE_RETRY_MS = 450;
+    private static final long CHALLENGE_RETRY_MS = 900;
     private static final long FULL_SITE_TIMEOUT_MS = 8000;
     private static final long PLAYBACK_IDLE_MS = 1200;
 

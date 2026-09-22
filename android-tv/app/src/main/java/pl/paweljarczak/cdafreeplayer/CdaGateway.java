@@ -3,9 +3,11 @@ package pl.paweljarczak.cdafreeplayer;
 import android.app.Activity;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.widget.FrameLayout;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Map;
@@ -23,6 +25,17 @@ public final class CdaGateway {
     }
 
     private static final String TAG = "CDAFP";
+    private static final long CATALOG_MIN_GAP_MS = 1700L;
+    private static final long CATALOG_WINDOW_MS = 15_000L;
+    private static final int CATALOG_WINDOW_MAX = 9;
+    private static final long RATE_LIMIT_FALLBACK_MS = 3500L;
+    private static final int RATE_LIMIT_HTTP_RETRIES = 2;
+
+    private final Object catalogRateLock = new Object();
+    private final ArrayDeque<Long> catalogStarts = new ArrayDeque<>();
+    private long lastCatalogStart;
+    private long catalogBlockedUntil;
+
     private final ExecutorService net = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "cda-net");
         t.setPriority(Thread.NORM_PRIORITY - 1);
@@ -53,11 +66,27 @@ public final class CdaGateway {
         if (closed || token != null && token.isCancelled()) return;
         net.execute(() -> {
             try {
-                CdaHttp.Result result = catalog ? http.getCatalog(url, token) : http.get(url, token);
-                if (token != null && token.isCancelled()) return;
-                logHttp(catalog ? "catalog" : "page", result, url);
+                CdaHttp.Result result;
+                int rateRetries = 0;
+                while (true) {
+                    if (catalog) awaitCatalogSlot(token);
+                    result = catalog ? http.getCatalog(url, token) : http.get(url, token);
+                    if (token != null && token.isCancelled()) return;
+                    logHttp(catalog ? "catalog" : "page", result, url);
 
-                if (result.challenge) {
+                    if (!catalog || result.status != 429 || rateRetries >= RATE_LIMIT_HTTP_RETRIES) break;
+                    long fallback = RATE_LIMIT_FALLBACK_MS * (rateRetries + 1L);
+                    long backoff = Math.max(result.retryAfterMs, fallback);
+                    noteCatalogRateLimit(backoff);
+                    rateRetries++;
+                    Log.w(TAG, "catalog HTTP 429 -> cooldown " + backoff + "ms; retry=" +
+                            rateRetries + "/" + RATE_LIMIT_HTTP_RETRIES +
+                            "; clearance=" + http.hasClearance());
+                }
+
+                final CdaHttp.Result finalResult = result;
+
+                if (finalResult.challenge) {
                     if (!allowWeb) {
                         post(token, cb::onChallengeRequired);
                         return;
@@ -67,7 +96,7 @@ public final class CdaGateway {
                     return;
                 }
 
-                if (allowWeb && http.isMobileResult(result)) {
+                if (allowWeb && http.isMobileResult(finalResult)) {
                     Log.i(TAG, "mobile CDA response -> preparing full-site session over HTTP");
                     CdaHttp.Result prep = http.prepareFullSite(token);
                     if (token != null && token.isCancelled()) return;
@@ -87,8 +116,8 @@ public final class CdaGateway {
                     return;
                 }
 
-                if (!http.isMobileResult(result)) web.markFullSitePrepared();
-                post(token, () -> cb.onHtml(result.body, false));
+                if (!http.isMobileResult(finalResult)) web.markFullSitePrepared();
+                post(token, () -> cb.onHtml(finalResult.body, false));
             } catch (InterruptedException ignored) {
             } catch (Exception e) {
                 Log.w(TAG, (catalog ? "catalog" : "page") + " HTTP failed url=" + safeUrl(url) +
@@ -105,8 +134,59 @@ public final class CdaGateway {
                 " challenge=" + result.challenge +
                 " mobile=" + (result.finalUrl != null && result.finalUrl.startsWith("https://m.cda.pl/")) +
                 " ms=" + result.elapsedMs +
+                " retryAfterMs=" + result.retryAfterMs +
                 " final=" + safeUrl(result.finalUrl) +
                 " requested=" + safeUrl(url));
+    }
+
+    private void awaitCatalogSlot(RequestToken token) throws InterruptedException {
+        boolean logged = false;
+        while (true) {
+            long wait;
+            int recent;
+            synchronized (catalogRateLock) {
+                long now = SystemClock.elapsedRealtime();
+                while (!catalogStarts.isEmpty() && now - catalogStarts.peekFirst() >= CATALOG_WINDOW_MS) {
+                    catalogStarts.removeFirst();
+                }
+                long ready = Math.max(catalogBlockedUntil, lastCatalogStart + CATALOG_MIN_GAP_MS);
+                if (catalogStarts.size() >= CATALOG_WINDOW_MAX) {
+                    ready = Math.max(ready, catalogStarts.peekFirst() + CATALOG_WINDOW_MS);
+                }
+                recent = catalogStarts.size();
+                wait = ready - now;
+                if (wait <= 0L) {
+                    lastCatalogStart = now;
+                    catalogStarts.addLast(now);
+                    return;
+                }
+            }
+            if (!logged && wait >= 100L) {
+                Log.i(TAG, "catalog throttle wait=" + wait + "ms; recent=" + recent +
+                        "/" + CATALOG_WINDOW_MAX);
+                logged = true;
+            }
+            sleepCancellable(wait, token);
+        }
+    }
+
+    private void noteCatalogRateLimit(long backoffMs) {
+        synchronized (catalogRateLock) {
+            long until = SystemClock.elapsedRealtime() + Math.max(1000L, Math.min(backoffMs, 30_000L));
+            if (until > catalogBlockedUntil) catalogBlockedUntil = until;
+        }
+    }
+
+    private static void sleepCancellable(long waitMs, RequestToken token) throws InterruptedException {
+        long end = SystemClock.elapsedRealtime() + waitMs;
+        while (true) {
+            if (Thread.currentThread().isInterrupted() || token != null && token.isCancelled()) {
+                throw new InterruptedException();
+            }
+            long left = end - SystemClock.elapsedRealtime();
+            if (left <= 0L) return;
+            Thread.sleep(Math.min(left, 250L));
+        }
     }
 
     public void fetchWeb(String url, RequestToken token, Callback cb) {
