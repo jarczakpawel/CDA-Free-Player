@@ -66,6 +66,44 @@ public final class CdaGateway {
         });
     }
 
+    public void fetchCatalog(String url, RequestToken token, Callback cb) {
+        if (closed || token != null && token.isCancelled()) return;
+        if (!web.isFullSitePrepared() || !http.hasSession(url)) {
+            fetchWeb(url, token, new Callback() {
+                @Override public void onHtml(String fallbackHtml, boolean viaWebView) {
+                    fetchCatalogHttp(url, token, cb, fallbackHtml);
+                }
+                @Override public void onError(String error) { cb.onError(error); }
+                @Override public void onChallengeRequired() { cb.onChallengeRequired(); }
+                @Override public void onVerification(boolean interactive) { cb.onVerification(interactive); }
+            });
+            return;
+        }
+        fetchCatalogHttp(url, token, cb, null);
+    }
+
+    private void fetchCatalogHttp(String url, RequestToken token, Callback cb, String fallbackHtml) {
+        net.execute(() -> {
+            try {
+                CdaHttp.Result result = http.getCatalog(url, token);
+                if (token != null && token.isCancelled()) return;
+                if (!result.challenge) {
+                    post(token, () -> cb.onHtml(result.body, false));
+                    return;
+                }
+                if (fallbackHtml != null && !fallbackHtml.isEmpty()) {
+                    post(token, () -> cb.onHtml(fallbackHtml, true));
+                    return;
+                }
+                post(token, () -> fetchWeb(url, token, cb));
+            } catch (InterruptedException ignored) {
+            } catch (Exception e) {
+                if (fallbackHtml != null && !fallbackHtml.isEmpty()) post(token, () -> cb.onHtml(fallbackHtml, true));
+                else post(token, () -> fetchWeb(url, token, cb));
+            }
+        });
+    }
+
     public void fetchWeb(String url, RequestToken token, Callback cb) {
         post(token, () -> web.fetch(url, token, bridge(token, cb)));
     }

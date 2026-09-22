@@ -149,7 +149,7 @@ public final class CdaRepository {
 
     private void fetchSearchPage(SearchSession s, int page) {
         String url = searchUrl(s.query, s.sort, s.duration, page);
-        gateway.fetch(url, true, s.token, new CdaGateway.Callback() {
+        gateway.fetchCatalog(url, s.token, new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
                 if (closed || s.token.isCancelled()) return;
                 parser.execute(() -> {

@@ -42,8 +42,16 @@ public final class CdaHttp {
     }
 
     public Result get(String url, RequestToken token) throws Exception {
+        return get(url, token, userAgent());
+    }
+
+    public Result getCatalog(String url, RequestToken token) throws Exception {
+        return get(url, token, CdaBrowserIdentity.catalogUserAgent(context));
+    }
+
+    private Result get(String url, RequestToken token, String userAgent) throws Exception {
         checkCancelled(token);
-        HttpURLConnection c = open(url, "GET", "https://www.cda.pl/");
+        HttpURLConnection c = open(url, "GET", "https://www.cda.pl/", userAgent);
         try {
             if (token != null) token.attach(c);
             int status = c.getResponseCode();
@@ -85,7 +93,7 @@ public final class CdaHttp {
     }
 
     private String postVideoGetLink(String endpoint, String referer, byte[] payload, RequestToken token) throws Exception {
-        HttpURLConnection c = open(endpoint, "POST", referer);
+        HttpURLConnection c = open(endpoint, "POST", referer, userAgent());
         c.setDoOutput(true);
         c.setRequestProperty("Accept", "application/json, text/plain, */*");
         c.setRequestProperty("Content-Type", "application/json");
@@ -111,13 +119,13 @@ public final class CdaHttp {
         }
     }
 
-    private HttpURLConnection open(String url, String method, String referer) throws Exception {
+    private HttpURLConnection open(String url, String method, String referer, String userAgent) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(12_000);
         c.setReadTimeout(20_000);
         c.setInstanceFollowRedirects(true);
         c.setRequestMethod(method);
-        c.setRequestProperty("User-Agent", userAgent());
+        c.setRequestProperty("User-Agent", userAgent);
         c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         c.setRequestProperty("Accept-Language", "pl-PL,pl;q=0.9,en;q=0.7");
         c.setRequestProperty("Referer", referer);

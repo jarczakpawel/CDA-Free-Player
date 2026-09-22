@@ -19,7 +19,7 @@ import java.util.Date;
 import java.util.Locale;
 
 public final class CdaDb extends SQLiteOpenHelper {
-    private static final int VER = 4;
+    private static final int VER = 5;
     private static final long CACHE_MS = 6L * 60 * 60 * 1000;
 
     public CdaDb(Context c) {
@@ -42,6 +42,7 @@ public final class CdaDb extends SQLiteOpenHelper {
         if (oldVersion < 2) db.delete("search_cache", null, null);
         if (oldVersion < 3) db.delete("comments", null, null);
         if (oldVersion < 4) db.delete("search_cache", null, null);
+        if (oldVersion < 5) db.delete("search_cache", null, null);
     }
 
     public synchronized void removeHistory(String id) {
@@ -187,12 +188,13 @@ public final class CdaDb extends SQLiteOpenHelper {
             }
         }
 
-        try (Cursor c = db.rawQuery("SELECT id,rating,cda_votes FROM metadata WHERE id IN (" + in + ") AND (rating IS NOT NULL OR cda_votes IS NOT NULL)", args)) {
+        try (Cursor c = db.rawQuery("SELECT id,description,rating,cda_votes FROM metadata WHERE id IN (" + in + ") AND (description<>'' OR rating IS NOT NULL OR cda_votes IS NOT NULL)", args)) {
             while (c.moveToNext()) {
                 Movie m = byId.get(c.getString(0));
                 if (m == null) continue;
-                if (m.rating == null && !c.isNull(1)) m.rating = c.getDouble(1);
-                if (m.ratingVotes == null && !c.isNull(2)) m.ratingVotes = c.getInt(2);
+                if ((m.shortDescription == null || m.shortDescription.isEmpty()) && !c.isNull(1)) m.shortDescription = c.getString(1);
+                if (m.rating == null && !c.isNull(2)) m.rating = c.getDouble(2);
+                if (m.ratingVotes == null && !c.isNull(3)) m.ratingVotes = c.getInt(3);
             }
         }
     }

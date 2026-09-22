@@ -654,6 +654,13 @@ public final class MainActivity extends Activity {
                 String d = md == null || md.description == null || md.description.isEmpty()
                         ? (m.shortDescription == null ? "" : m.shortDescription)
                         : md.description;
+                if (md != null) {
+                    if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
+                    if (m.rating == null && md.rating != null) m.rating = md.rating;
+                    if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
+                    adapter.notifyDataSetChanged();
+                    if (focused == m) showMovie(m);
+                }
                 setStatus("Gotowe");
                 TvDialogs.text(MainActivity.this, "Opis", d);
             }
@@ -699,6 +706,12 @@ public final class MainActivity extends Activity {
         repo.loadPlayer(m, new CdaRepository.PlayerListener() {
             @Override public void onPlayer(PlayerData p, MovieMetadata md) {
                 playerPreparing = false;
+                if (md != null) {
+                    if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
+                    if (m.rating == null && md.rating != null) m.rating = md.rating;
+                    if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
+                    adapter.notifyDataSetChanged();
+                }
                 long resume = repo.db().resumePosition(m.id);
                 repo.enterPlaybackMode();
                 images.trimForPlayback();
