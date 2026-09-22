@@ -16,13 +16,14 @@ from bs4 import BeautifulSoup
 from .config import BASE, PROFILE_DIR, SESSION_FILE, LOG_FILE
 
 
+DEBUG_LOG = os.environ.get("CDAFP_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger("cda-free-player")
 logger.setLevel(logging.INFO)
-if not logger.handlers:
+if DEBUG_LOG and not logger.handlers:
     handler = RotatingFileHandler(
         LOG_FILE,
         maxBytes=5 * 1024 * 1024,
-        backupCount=3,
+        backupCount=2,
         encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -30,6 +31,8 @@ if not logger.handlers:
 
 
 def log_event(event, **data):
+    if not DEBUG_LOG:
+        return
     logger.info(json.dumps({
         "ts": datetime.now().isoformat(timespec="milliseconds"),
         "event": event,

@@ -12,6 +12,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.webkit.WebView;
@@ -62,6 +63,22 @@ public final class SettingsDialog {
         });
         box.addView(updateWebView);
 
+        Button fontScale = button(a, "Wielkość napisów: " + UiScale.label(a));
+        fontScale.setOnClickListener(v -> {
+            String[] labels = UiScale.labels();
+            new AlertDialog.Builder(a)
+                    .setTitle("Wielkość napisów")
+                    .setSingleChoiceItems(labels, UiScale.selectedIndex(a), (choice, which) -> {
+                        UiScale.set(a, UiScale.valueAt(which));
+                        choice.dismiss();
+                        Toast.makeText(a, "Wielkość napisów: " + labels[which], Toast.LENGTH_SHORT).show();
+                        a.recreate();
+                    })
+                    .setNegativeButton("Anuluj", null)
+                    .show();
+        });
+        box.addView(fontScale);
+
         TextView updateStatus = text(a, "Aktualizacja: sprawdzanie…", 14, false);
         updateStatus.setPadding(0, dp(a, 14), 0, dp(a, 5));
         box.addView(updateStatus);
@@ -91,9 +108,13 @@ public final class SettingsDialog {
         }));
         box.addView(clearFavorites);
 
+        ScrollView scroll = new ScrollView(a);
+        scroll.setFillViewport(true);
+        scroll.addView(box);
+
         AlertDialog dialog = new AlertDialog.Builder(a)
                 .setTitle("Ustawienia")
-                .setView(box)
+                .setView(scroll)
                 .setPositiveButton("Zamknij", null)
                 .create();
         dialog.setOnShowListener(x -> github.requestFocus());
@@ -157,7 +178,9 @@ public final class SettingsDialog {
         b.setText(text);
         b.setTextColor(Color.WHITE);
         b.setFocusable(true);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(a, 50));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        b.setMinHeight(dp(a, 50));
+        b.setPadding(dp(a, 10), dp(a, 6), dp(a, 10), dp(a, 6));
         lp.setMargins(0, dp(a, 5), 0, 0);
         b.setLayoutParams(lp);
         return b;

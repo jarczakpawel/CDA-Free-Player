@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.Manifest;
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -15,7 +16,9 @@ import android.speech.RecognitionListener;
 import android.speech.SpeechRecognizer;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -39,6 +42,11 @@ import java.util.Collections;
 import java.util.Locale;
 
 public final class MainActivity extends Activity {
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(UiScale.wrap(newBase));
+    }
+
     private static final int DEFAULT_YEAR = 1985;
     private static final int INITIAL_TARGET = 12;
     private static final int INITIAL_MAX_PAGES = 4;
@@ -95,6 +103,7 @@ public final class MainActivity extends Activity {
         setupYears();
         setupFilters();
         setupLeft();
+        setImeAccess(false);
         startSearch(query, "Lektor 1985");
         yearRow.postDelayed(() -> focusYear(DEFAULT_YEAR, true), 250);
         h.postDelayed(updater::checkOnStartup, 2200);
@@ -174,6 +183,20 @@ public final class MainActivity extends Activity {
         int last = gridLayout.findLastVisibleItemPosition();
         if (first != RecyclerView.NO_POSITION && last >= first) {
             adapter.notifyItemRangeChanged(first, last - first + 1);
+        }
+    }
+
+
+    private void setImeAccess(boolean enabled) {
+        if (enabled) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+            return;
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+        View focus = getCurrentFocus();
+        if (focus != null) {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(focus.getWindowToken(), 0);
         }
     }
 
@@ -340,6 +363,14 @@ public final class MainActivity extends Activity {
             images.clearCache();
         }));
         removeCollection.setOnClickListener(v -> toggleRemoveMode());
+        manualQuery.setOnFocusChangeListener((v, hasFocus) -> {
+            setImeAccess(hasFocus);
+            if (hasFocus) h.postDelayed(() -> {
+                if (!manualQuery.hasFocus()) return;
+                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(manualQuery, InputMethodManager.SHOW_IMPLICIT);
+            }, 80);
+        });
         manualQuery.setOnEditorActionListener((v, action, event) -> {
             if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); return true; }
             return false;
@@ -542,6 +573,8 @@ public final class MainActivity extends Activity {
     private void manualSearch() {
         String q = manualQuery.getText().toString().trim();
         if (q.isEmpty()) return;
+        manualQuery.clearFocus();
+        setImeAccess(false);
         selectedYear = null;
         startSearch(q, "Wyniki: " + q);
     }
@@ -668,15 +701,15 @@ public final class MainActivity extends Activity {
 
     private void showMovie(Movie m) {
         focused = m;
-        m.title = MovieTitle.clean(m.title, m.duration);
         showDetail();
         detailTitle.setText(m.title);
         if (detailImageTask != null) h.removeCallbacks(detailImageTask);
+        images.cancel(detailThumb);
         final Movie imageMovie = m;
         detailImageTask = () -> {
             if (focused == imageMovie) images.load(imageMovie.imageUrl, detailThumb);
         };
-        h.postDelayed(detailImageTask, 60);
+        h.postDelayed(detailImageTask, 120);
         detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
         if (m.rating == null) {
             detailRating.setText("");

@@ -89,7 +89,7 @@ class Database:
 
         self.db.execute("DELETE FROM metadata_v6")
         self.db.execute("DELETE FROM comments_v15")
-        self.db.execute("DELETE FROM search_pages_v13 WHERE fetched_at<?", (time.time() - CACHE_TTL,))
+        self.db.execute("DELETE FROM search_pages_v13")
         self.db.commit()
 
     def is_favorite(self, vid):

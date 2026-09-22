@@ -1,10 +1,13 @@
 package pl.paweljarczak.cdafreeplayer;
 
+import android.app.ActivityManager;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 import android.os.Process;
 import android.util.LruCache;
+import android.util.Size;
 import android.widget.ImageView;
 
 import java.io.BufferedInputStream;
@@ -29,6 +32,8 @@ public final class ImageLoader {
     private static final int MAX_DOWNLOAD = 8 * 1024 * 1024;
     private static final int TARGET_W = 360;
     private static final int TARGET_H = 210;
+    private static final long TOUCH_INTERVAL_MS = 6L * 60 * 60 * 1000;
+    private static final long MAX_AGE_MS = 24L * 60 * 60 * 1000;
 
     private final LruCache<String, Bitmap> mem;
     private final ThreadPoolExecutor pool;
@@ -43,7 +48,11 @@ public final class ImageLoader {
         mem = new LruCache<String, Bitmap>(cacheKb) {
             @Override protected int sizeOf(String k, Bitmap b) { return Math.max(1, b.getByteCount() / 1024); }
         };
-        pool = new ThreadPoolExecutor(2, 2, 15, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
+        ActivityManager am = (ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        if (am != null) am.getMemoryInfo(memory);
+        int workers = memory.totalMem > 0 && memory.totalMem <= 3L * 1024 * 1024 * 1024 ? 1 : 2;
+        pool = new ThreadPoolExecutor(workers, workers, 15, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
             Thread t = new Thread(() -> {
                 try { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); } catch (Throwable ignored) {}
                 r.run();
@@ -101,7 +110,10 @@ public final class ImageLoader {
             if (closed || paused || !hasLiveTarget(url)) return;
             File f = new File(dir, sha1(url) + ".jpg");
             if (!f.exists() || f.length() == 0) download(url, f);
-            else f.setLastModified(System.currentTimeMillis());
+            else {
+                long now = System.currentTimeMillis();
+                if (now - f.lastModified() > TOUCH_INTERVAL_MS) f.setLastModified(now);
+            }
             if (closed || paused || !hasLiveTarget(url)) return;
             Bitmap b = decode(f);
             if (b == null) {
@@ -163,25 +175,24 @@ public final class ImageLoader {
     }
 
     private static Bitmap decode(File f) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(f.getAbsolutePath(), bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-        int sample = 1;
-        while (bounds.outWidth / (sample * 2) >= TARGET_W && bounds.outHeight / (sample * 2) >= TARGET_H) sample *= 2;
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sample;
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        Bitmap b = BitmapFactory.decodeFile(f.getAbsolutePath(), options);
-        if (b == null) return null;
-        if (b.getWidth() <= TARGET_W && b.getHeight() <= TARGET_H) return b;
-        float scale = Math.min((float) TARGET_W / b.getWidth(), (float) TARGET_H / b.getHeight());
-        int w = Math.max(1, Math.round(b.getWidth() * scale));
-        int h = Math.max(1, Math.round(b.getHeight() * scale));
-        if (w == b.getWidth() && h == b.getHeight()) return b;
-        Bitmap scaled = Bitmap.createScaledBitmap(b, w, h, true);
-        if (scaled != b) b.recycle();
-        return scaled;
+        try {
+            return ImageDecoder.decodeBitmap(ImageDecoder.createSource(f), (decoder, info, source) -> {
+                Size size = info.getSize();
+                int w = size.getWidth(), h = size.getHeight();
+                if (w > 0 && h > 0) {
+                    float scale = Math.min((float) TARGET_W / w, (float) TARGET_H / h);
+                    if (scale < 1f) {
+                        decoder.setTargetSize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+                    }
+                }
+                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+                decoder.setMemorySizePolicy(ImageDecoder.MEMORY_POLICY_LOW_RAM);
+            });
+        } catch (Exception e) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            return BitmapFactory.decodeFile(f.getAbsolutePath(), options);
+        }
     }
 
     public void trimForPlayback() { mem.evictAll(); }
@@ -203,9 +214,14 @@ public final class ImageLoader {
         try {
             File[] files = dir.listFiles();
             if (files == null) return;
+            long cutoff = System.currentTimeMillis() - MAX_AGE_MS;
             long total = 0;
-            for (File f : files) total += f.length();
-            if (total <= MAX_DISK) return;
+            for (File f : files) {
+                if (f.lastModified() > 0 && f.lastModified() < cutoff && f.delete()) continue;
+                total += f.length();
+            }
+            files = dir.listFiles();
+            if (files == null || total <= MAX_DISK) return;
             Arrays.sort(files, Comparator.comparingLong(File::lastModified));
             for (File f : files) {
                 if (total <= MAX_DISK * 3 / 4) break;
@@ -218,9 +234,14 @@ public final class ImageLoader {
     private static String sha1(String s) throws Exception {
         MessageDigest d = MessageDigest.getInstance("SHA-1");
         byte[] b = d.digest(s.getBytes("UTF-8"));
-        StringBuilder x = new StringBuilder();
-        for (byte z : b) x.append(String.format("%02x", z));
-        return x.toString();
+        char[] out = new char[b.length * 2];
+        final char[] hex = "0123456789abcdef".toCharArray();
+        for (int i = 0; i < b.length; i++) {
+            int v = b[i] & 0xff;
+            out[i * 2] = hex[v >>> 4];
+            out[i * 2 + 1] = hex[v & 0x0f];
+        }
+        return new String(out);
     }
 
     public void shutdown() {

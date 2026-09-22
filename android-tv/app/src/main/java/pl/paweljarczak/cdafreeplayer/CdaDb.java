@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
@@ -20,10 +21,26 @@ import java.util.Locale;
 
 public final class CdaDb extends SQLiteOpenHelper {
     private static final int VER = 7;
-    private static final long CACHE_MS = 6L * 60 * 60 * 1000;
+    private static final long CACHE_MS = 24L * 60 * 60 * 1000;
+    private static final AtomicBoolean STARTUP_MAINTENANCE = new AtomicBoolean();
 
     public CdaDb(Context c) {
         super(c, "cda-free-player.db", null, VER);
+        maintainCacheOnProcessStart();
+    }
+
+    private void maintainCacheOnProcessStart() {
+        if (!STARTUP_MAINTENANCE.compareAndSet(false, true)) return;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            long cutoff = System.currentTimeMillis() - CACHE_MS;
+            db.delete("search_cache", null, null);
+            db.delete("metadata", "updated<?", new String[]{String.valueOf(cutoff)});
+            db.delete("comments", "updated<?", new String[]{String.valueOf(cutoff)});
+        } catch (RuntimeException e) {
+            STARTUP_MAINTENANCE.set(false);
+            throw e;
+        }
     }
 
     @Override

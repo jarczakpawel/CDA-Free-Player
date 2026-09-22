@@ -2,6 +2,7 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -47,6 +48,11 @@ import java.util.Map;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class PlayerActivity extends Activity {
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(UiScale.wrap(newBase));
+    }
+
     private static final class Source {
         final String url;
         final String kind;

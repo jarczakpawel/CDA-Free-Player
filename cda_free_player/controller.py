@@ -65,7 +65,8 @@ class DPadController:
         return data["widgets"][self.index]
 
     def _debug(self):
-        self.on_debug(self.zone or "-", self.index, self.last_key)
+        if self.on_debug is not None:
+            self.on_debug(self.zone or "-", self.index, self.last_key)
 
     def _key(self, event):
         key = event.keysym

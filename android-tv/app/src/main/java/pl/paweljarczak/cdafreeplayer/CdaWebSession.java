@@ -45,6 +45,7 @@ public final class CdaWebSession {
     }
 
     private static final String TAG = "CDAFP";
+    private static final boolean TRACE = false;
     private static final long INTERACTIVE_GRACE_MS = 250;
     private static final long NORMAL_SETTLE_MS = 250;
     private static final long SEARCH_SETTLE_MS = 2500;
@@ -148,7 +149,7 @@ public final class CdaWebSession {
             web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
         PackageInfo provider = WebView.getCurrentWebViewPackage();
-        Log.i(TAG, "WebView instance ready in " + (SystemClock.elapsedRealtime() - webStarted) + "ms" +
+        if (TRACE) Log.i(TAG, "WebView instance ready in " + (SystemClock.elapsedRealtime() - webStarted) + "ms" +
                 (provider == null ? "" : "; provider=" + provider.packageName + "/" + provider.versionName));
 
         installPlayerCaptureBridge();
@@ -158,12 +159,12 @@ public final class CdaWebSession {
                 Job job = current;
                 if (job == null) return;
                 if (fullSiteBootstrap) {
-                    Log.i(TAG, "CDA full-site bootstrap page finished: " + safeUrl(u));
+                    if (TRACE) Log.i(TAG, "CDA full-site bootstrap page finished: " + safeUrl(u));
                     scheduleInspect(job, 0);
                     return;
                 }
                 if (!samePage(job.url, u)) return;
-                Log.i(TAG, (job.expectPlayer ? "player" : "page") + " WebView ready: " + safeUrl(u));
+                if (TRACE) Log.i(TAG, (job.expectPlayer ? "player" : "page") + " WebView ready: " + safeUrl(u));
                 if (job.expectPlayer) {
                     try {
                         v.evaluateJavascript(scriptFor(job), ignored -> scheduleInspect(job, 0));
@@ -207,7 +208,7 @@ public final class CdaWebSession {
             }
         });
         host.addView(web, new FrameLayout.LayoutParams(-1, -1));
-        Log.i(TAG, "WebView created; identity=" + CdaBrowserIdentity.mode(activity) +
+        if (TRACE) Log.i(TAG, "WebView created; identity=" + CdaBrowserIdentity.mode(activity) +
                 "; ua=" + s.getUserAgentString());
     }
 
@@ -237,7 +238,7 @@ public final class CdaWebSession {
                                     PlayerData parsed = CdaParser.parsePlayerData(CdaParser.PLAYER_DATA_PREFIX + raw);
                                     if (parsed == null || !parsed.hasPlayableSource() && !parsed.canResolveQuality()) return;
                                     capturedPlayerData = raw;
-                                    Log.i(TAG, "player_data captured; bytes=" + raw.length() + "; mainFrame=" + isMainFrame);
+                                    if (TRACE) Log.i(TAG, "player_data captured; bytes=" + raw.length() + "; mainFrame=" + isMainFrame);
                                     finishCurrent(job, CdaParser.PLAYER_DATA_PREFIX + raw);
                                 } catch (Exception ignored) {}
                             }
@@ -303,7 +304,7 @@ public final class CdaWebSession {
             web.setFocusableInTouchMode(false);
         }
         current.cb.onVerification(false);
-        Log.i(TAG, (current.expectPlayer ? "player" : "page") + " WebView load: " + safeUrl(current.url));
+        if (TRACE) Log.i(TAG, (current.expectPlayer ? "player" : "page") + " WebView load: " + safeUrl(current.url));
         Job job = current;
         try {
             if (captureHook != null) { captureHook.remove(); captureHook = null; }
@@ -318,7 +319,7 @@ public final class CdaWebSession {
         try {
             if (!fullSitePrepared) {
                 fullSiteBootstrap = true;
-                Log.i(TAG, "Preparing CDA full-site session");
+                if (TRACE) Log.i(TAG, "Preparing CDA full-site session");
                 fullSiteTask = () -> {
                     if (job != current || web == null || !fullSiteBootstrap) return;
                     fullSiteBootstrap = false;
@@ -380,7 +381,7 @@ public final class CdaWebSession {
                 fullSitePrepared = true;
                 if (fullSiteTask != null) h.removeCallbacks(fullSiteTask);
                 fullSiteTask = null;
-                Log.i(TAG, "CDA full-site session prepared in " + (now - started) + "ms");
+                if (TRACE) Log.i(TAG, "CDA full-site session prepared in " + (now - started) + "ms");
                 h.post(() -> {
                     if (job == current && web != null) web.loadUrl(job.url);
                 });
@@ -456,7 +457,7 @@ public final class CdaWebSession {
                     htmlValue -> {
                         if (job != current || web == null) return;
                         String html = decode(htmlValue);
-                        Log.i(TAG, "player WebView settle without direct capture; htmlBytes=" + html.length() +
+                        if (TRACE) Log.i(TAG, "player WebView settle without direct capture; htmlBytes=" + html.length() +
                                 "; signal=" + hasPlayerSignal(html));
                         finishCurrent(job, html);
                     });
@@ -509,7 +510,7 @@ public final class CdaWebSession {
             h.removeCallbacks(fullSiteTask);
             fullSiteTask = null;
         }
-        Log.i(TAG, "Cloudflare challenge detected after " + (now - started) + "ms; bootstrap=" + fullSiteBootstrap);
+        if (TRACE) Log.i(TAG, "Cloudflare challenge detected after " + (now - started) + "ms; bootstrap=" + fullSiteBootstrap);
     }
 
     private void markChallengeCleared(long now) {
@@ -519,7 +520,7 @@ public final class CdaWebSession {
             String cookie = CookieManager.getInstance().getCookie("https://www.cda.pl/");
             clearance = cookie != null && cookie.contains("cf_clearance=");
         } catch (Exception ignored) {}
-        Log.i(TAG, "Cloudflare challenge cleared in " + (now - challengeSince) + "ms; clearance=" + clearance);
+        if (TRACE) Log.i(TAG, "Cloudflare challenge cleared in " + (now - challengeSince) + "ms; clearance=" + clearance);
         challengeSince = 0L;
         if (shown && fullSiteBootstrap) {
             shown = false;
@@ -548,7 +549,7 @@ public final class CdaWebSession {
                 web.requestFocus();
             }
             job.cb.onVerification(true);
-            Log.i(TAG, "Cloudflare verification shown after " + (now - started) + "ms");
+            if (TRACE) Log.i(TAG, "Cloudflare verification shown after " + (now - started) + "ms");
         }
     }
 
@@ -722,7 +723,7 @@ public final class CdaWebSession {
             if (current != null || web == null) return;
             flushCookies();
             dropWeb();
-            Log.i(TAG, (playbackContext ? "Playback" : "Browse") + " WebView released after idle");
+            if (TRACE) Log.i(TAG, (playbackContext ? "Playback" : "Browse") + " WebView released after idle");
         };
         h.postDelayed(destroyTask, delay);
     }

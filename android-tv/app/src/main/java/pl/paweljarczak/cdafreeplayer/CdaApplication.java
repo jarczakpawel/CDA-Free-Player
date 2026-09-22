@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class CdaApplication extends Application {
     private static final String TAG = "CDAFP";
+    private static final boolean TRACE = false;
     private static final CountDownLatch WEBVIEW_STARTED = new CountDownLatch(1);
     private static volatile boolean webViewStartupFinished;
     private ExecutorService webStartup;
@@ -38,7 +39,7 @@ public final class CdaApplication extends Application {
                     new WebViewOutcomeReceiver<WebViewStartUpResult, WebViewStartupException>() {
                         @Override public void onResult(@NonNull WebViewStartUpResult result) {
                             try { CdaBrowserIdentity.userAgent(getApplicationContext()); } catch (Throwable ignored) {}
-                            Log.i(TAG, "WebView async startup ready in " + (SystemClock.elapsedRealtime() - started) + "ms");
+                            if (TRACE) Log.i(TAG, "WebView async startup ready in " + (SystemClock.elapsedRealtime() - started) + "ms");
                             finishWebViewStartup();
                         }
                         @Override public void onError(@NonNull WebViewStartupException error) {

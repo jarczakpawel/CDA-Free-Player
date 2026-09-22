@@ -25,6 +25,7 @@ public final class CdaGateway {
     }
 
     private static final String TAG = "CDAFP";
+    private static final boolean TRACE = false;
     private static final long CATALOG_MIN_GAP_MS = 1700L;
     private static final long CATALOG_WINDOW_MS = 15_000L;
     private static final int CATALOG_WINDOW_MAX = 9;
@@ -35,6 +36,8 @@ public final class CdaGateway {
     private final ArrayDeque<Long> catalogStarts = new ArrayDeque<>();
     private long lastCatalogStart;
     private long catalogBlockedUntil;
+    private long adaptiveCatalogGapMs = CATALOG_MIN_GAP_MS;
+    private int catalogSuccessStreak;
 
     private final ExecutorService net = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "cda-net");
@@ -73,13 +76,14 @@ public final class CdaGateway {
                     result = catalog ? http.getCatalog(url, token) : http.get(url, token);
                     if (token != null && token.isCancelled()) return;
                     logHttp(catalog ? "catalog" : "page", result, url);
+                    if (catalog && result.status >= 200 && result.status < 400) noteCatalogSuccess();
 
                     if (!catalog || result.status != 429 || rateRetries >= RATE_LIMIT_HTTP_RETRIES) break;
                     long fallback = RATE_LIMIT_FALLBACK_MS * (rateRetries + 1L);
                     long backoff = Math.max(result.retryAfterMs, fallback);
                     noteCatalogRateLimit(backoff);
                     rateRetries++;
-                    Log.w(TAG, "catalog HTTP 429 -> cooldown " + backoff + "ms; retry=" +
+                    if (TRACE) Log.w(TAG, "catalog HTTP 429 -> cooldown " + backoff + "ms; retry=" +
                             rateRetries + "/" + RATE_LIMIT_HTTP_RETRIES +
                             "; clearance=" + http.hasClearance());
                 }
@@ -91,13 +95,13 @@ public final class CdaGateway {
                         post(token, cb::onChallengeRequired);
                         return;
                     }
-                    Log.i(TAG, "HTTP challenge -> WebView; clearance=" + http.hasClearance());
+                    if (TRACE) Log.i(TAG, "HTTP challenge -> WebView; clearance=" + http.hasClearance());
                     post(token, () -> fetchWeb(url, token, cb));
                     return;
                 }
 
                 if (allowWeb && http.isMobileResult(finalResult)) {
-                    Log.i(TAG, "mobile CDA response -> preparing full-site session over HTTP");
+                    if (TRACE) Log.i(TAG, "mobile CDA response -> preparing full-site session over HTTP");
                     CdaHttp.Result prep = http.prepareFullSite(token);
                     if (token != null && token.isCancelled()) return;
                     logHttp("fullsite", prep, "https://m.cda.pl/gofullcda");
@@ -111,7 +115,7 @@ public final class CdaGateway {
                             return;
                         }
                     }
-                    Log.i(TAG, "full-site HTTP path needs WebView; clearance=" + http.hasClearance());
+                    if (TRACE) Log.i(TAG, "full-site HTTP path needs WebView; clearance=" + http.hasClearance());
                     post(token, () -> fetchWeb(url, token, cb));
                     return;
                 }
@@ -129,6 +133,7 @@ public final class CdaGateway {
     }
 
     private static void logHttp(String kind, CdaHttp.Result result, String url) {
+        if (!TRACE) return;
         Log.i(TAG, kind + " http status=" + result.status +
                 " bytes=" + (result.body == null ? 0 : result.body.length()) +
                 " challenge=" + result.challenge +
@@ -149,7 +154,7 @@ public final class CdaGateway {
                 while (!catalogStarts.isEmpty() && now - catalogStarts.peekFirst() >= CATALOG_WINDOW_MS) {
                     catalogStarts.removeFirst();
                 }
-                long ready = Math.max(catalogBlockedUntil, lastCatalogStart + CATALOG_MIN_GAP_MS);
+                long ready = Math.max(catalogBlockedUntil, lastCatalogStart + adaptiveCatalogGapMs);
                 if (catalogStarts.size() >= CATALOG_WINDOW_MAX) {
                     ready = Math.max(ready, catalogStarts.peekFirst() + CATALOG_WINDOW_MS);
                 }
@@ -161,9 +166,9 @@ public final class CdaGateway {
                     return;
                 }
             }
-            if (!logged && wait >= 100L) {
+            if (TRACE && !logged && wait >= 100L) {
                 Log.i(TAG, "catalog throttle wait=" + wait + "ms; recent=" + recent +
-                        "/" + CATALOG_WINDOW_MAX);
+                        "/" + CATALOG_WINDOW_MAX + "; gap=" + adaptiveCatalogGapMs);
                 logged = true;
             }
             sleepCancellable(wait, token);
@@ -172,8 +177,22 @@ public final class CdaGateway {
 
     private void noteCatalogRateLimit(long backoffMs) {
         synchronized (catalogRateLock) {
-            long until = SystemClock.elapsedRealtime() + Math.max(1000L, Math.min(backoffMs, 30_000L));
+            long now = SystemClock.elapsedRealtime();
+            long safeBackoff = Math.max(1000L, Math.min(backoffMs, 30_000L));
+            long until = now + safeBackoff;
             if (until > catalogBlockedUntil) catalogBlockedUntil = until;
+            adaptiveCatalogGapMs = Math.max(adaptiveCatalogGapMs, Math.min(5000L, safeBackoff + 500L));
+            catalogSuccessStreak = 0;
+        }
+    }
+
+    private void noteCatalogSuccess() {
+        synchronized (catalogRateLock) {
+            if (adaptiveCatalogGapMs <= CATALOG_MIN_GAP_MS) return;
+            catalogSuccessStreak++;
+            if (catalogSuccessStreak < 4) return;
+            catalogSuccessStreak = 0;
+            adaptiveCatalogGapMs = Math.max(CATALOG_MIN_GAP_MS, adaptiveCatalogGapMs - 500L);
         }
     }
 

@@ -27,6 +27,7 @@ from .config import (
     BORDER,
     CARD,
     CARD_FOCUS,
+    CACHE_TTL,
     CURRENT_YEAR,
     DEFAULT_YEAR,
     GRID_COLS,
@@ -71,6 +72,7 @@ class App:
         self.play_preparing = False
         self.play_cancel = threading.Event()
         self.thumbnail_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cda-thumb")
+        self.thumbnail_pool.submit(self.prune_thumbnail_cache)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.client = CdaClient(self.events)
         self.db = Database()
@@ -142,7 +144,7 @@ class App:
         self.controller = DPadController(
             self.root,
             self.on_controller_focus,
-            self.on_controller_debug,
+            None,
             self.on_controller_back,
             self.on_controller_ok,
         )
@@ -3032,6 +3034,15 @@ class App:
         self.comments_memory[vid] = comments
         while len(self.comments_memory) > 12:
             self.comments_memory.pop(next(iter(self.comments_memory)))
+
+    def prune_thumbnail_cache(self):
+        cutoff = time.time() - CACHE_TTL
+        try:
+            for path in THUMB_DIR.iterdir():
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+        except OSError:
+            pass
 
     def clear_transient_cache(self):
         self.metadata_memory.clear()

@@ -181,10 +181,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
     private void bindListeners(Holder h, Movie m) {
         h.root.setOnFocusChangeListener((v, focused) -> {
-            v.animate().cancel();
-            v.setTranslationZ(focused ? 18f * v.getResources().getDisplayMetrics().density : 0f);
-            v.setScaleX(focused ? 1.025f : 1f);
-            v.setScaleY(focused ? 1.025f : 1f);
             if (!focused) return;
             int p = h.getBindingAdapterPosition();
             if (p == RecyclerView.NO_POSITION) return;
@@ -241,10 +237,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         if (holder instanceof Holder) {
             Holder h = (Holder) holder;
             images.cancel(h.image);
-            h.root.animate().cancel();
-            h.root.setScaleX(1f);
-            h.root.setScaleY(1f);
-            h.root.setTranslationZ(0f);
         }
         super.onViewRecycled(holder);
     }

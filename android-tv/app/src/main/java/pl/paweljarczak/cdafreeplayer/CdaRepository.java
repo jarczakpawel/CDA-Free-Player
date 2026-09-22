@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 
 public final class CdaRepository {
     private static final String TAG = "CDAFP";
+    private static final boolean TRACE = false;
 
     public interface SearchListener {
         void onLoading(int page);
@@ -209,6 +210,7 @@ public final class CdaRepository {
     }
 
     private static void logCatalogPage(int page, String source, String html, SearchPage parsed) {
+        if (!TRACE) return;
         int ratings = 0, votes = 0, shorts = 0;
         for (Movie m : parsed.movies) {
             if (m.rating != null) ratings++;
@@ -216,7 +218,7 @@ public final class CdaRepository {
             if (m.shortDescription != null && !m.shortDescription.isEmpty()) shorts++;
         }
         String lower = html == null ? "" : html.toLowerCase(Locale.ROOT);
-        Log.i(TAG, "catalog parse page=" + page +
+        if (TRACE) Log.i(TAG, "catalog parse page=" + page +
                 " via=" + source +
                 " bytes=" + (html == null ? 0 : html.length()) +
                 " raw=" + parsed.raw +
@@ -232,8 +234,9 @@ public final class CdaRepository {
     }
 
     private static void logMetadata(String id, String source, String html, MovieMetadata md) {
+        if (!TRACE) return;
         String lower = html == null ? "" : html.toLowerCase(Locale.ROOT);
-        Log.i(TAG, "metadata parse id=" + id +
+        if (TRACE) Log.i(TAG, "metadata parse id=" + id +
                 " via=" + source +
                 " bytes=" + (html == null ? 0 : html.length()) +
                 " rating=" + md.rating +
@@ -338,7 +341,7 @@ public final class CdaRepository {
         suspended = previous;
         CachedPlayer hit = getCachedPlayer(m.id);
         if (hit != null && validPlayer(hit.data)) {
-            Log.i(TAG, "player cache hit id=" + m.id);
+            if (TRACE) Log.i(TAG, "player cache hit id=" + m.id);
             MovieMetadata md = mergeMetadata(hit.metadata, sessionMetadata(m.id));
             listener.onPlayer(hit.data, md);
             return;
@@ -351,7 +354,7 @@ public final class CdaRepository {
 
     private void fetchPlayerAttempt(Movie m, RequestToken token, PlayerListener listener, boolean forceWeb) {
         long started = android.os.SystemClock.elapsedRealtime();
-        Log.i(TAG, "player fetch start id=" + m.id + " forceWeb=" + forceWeb);
+        if (TRACE) Log.i(TAG, "player fetch start id=" + m.id + " forceWeb=" + forceWeb);
 
         CdaGateway.Callback cb = new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
@@ -359,7 +362,7 @@ public final class CdaRepository {
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
                     PlayerData parsed = CdaParser.parsePlayerData(html);
-                    Log.i(TAG, "player parse id=" + m.id +
+                    if (TRACE) Log.i(TAG, "player parse id=" + m.id +
                             " via=" + (via ? "webview" : "http") +
                             " bytes=" + (html == null ? 0 : html.length()) +
                             " found=" + (parsed != null) +
