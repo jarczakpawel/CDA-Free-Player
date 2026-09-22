@@ -23,45 +23,19 @@ public final class SettingsDialog {
     private SettingsDialog() { }
 
     public static void show(Activity a, CdaDb db, UpdateManager updater, Listener listener, Runnable clearCacheAction) {
+        LinearLayout title = new LinearLayout(a);
+        title.setOrientation(LinearLayout.HORIZONTAL);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(a, 24), dp(a, 16), dp(a, 24), dp(a, 10));
+        TextView titleText = text(a, "Ustawienia", 20, true);
+        title.addView(titleText, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView author = text(a, "Paweł Jarczak", 13, false);
+        author.setTextColor(Color.LTGRAY);
+        title.addView(author);
+
         LinearLayout box = new LinearLayout(a);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(a, 22), dp(a, 12), dp(a, 22), dp(a, 16));
-
-        TextView version = text(a, "CDA Free Player  " + BuildConfig.VERSION_NAME, 18, true);
-        box.addView(version);
-        TextView author = text(a, "Autor: Paweł Jarczak", 14, false);
-        author.setPadding(0, dp(a, 8), 0, 0);
-        box.addView(author);
-
-        Button github = button(a, "GitHub");
-        github.setOnClickListener(v -> {
-            try {
-                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/jarczakpawel/CDA-Free-Player")));
-            } catch (RuntimeException e) {
-                Toast.makeText(a, "Brak przeglądarki na tym urządzeniu", Toast.LENGTH_LONG).show();
-            }
-        });
-        box.addView(github);
-
-        PackageInfo webView = WebView.getCurrentWebViewPackage();
-        String webViewVersion = webView == null ? "brak" : webView.versionName;
-        TextView webViewInfo = text(a, "Android System WebView: " + webViewVersion, 13, false);
-        webViewInfo.setPadding(0, dp(a, 10), 0, 0);
-        box.addView(webViewInfo);
-        Button updateWebView = button(a, "Aktualizuj Android System WebView");
-        updateWebView.setOnClickListener(v -> {
-            String pkg = webView == null ? "com.google.android.webview" : webView.packageName;
-            try {
-                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg)));
-            } catch (RuntimeException e) {
-                try {
-                    a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=" + pkg)));
-                } catch (RuntimeException ignored) {
-                    Toast.makeText(a, "Nie można otworzyć aktualizacji WebView", Toast.LENGTH_LONG).show();
-                }
-            }
-        });
-        box.addView(updateWebView);
+        box.setPadding(dp(a, 22), dp(a, 4), dp(a, 22), dp(a, 16));
 
         Button fontScale = button(a, "Wielkość napisów: " + UiScale.label(a));
         fontScale.setOnClickListener(v -> {
@@ -79,20 +53,36 @@ public final class SettingsDialog {
         });
         box.addView(fontScale);
 
-        TextView updateStatus = text(a, "Aktualizacja: sprawdzanie…", 14, false);
-        updateStatus.setPadding(0, dp(a, 14), 0, dp(a, 5));
+        TextView version = text(a, "Wersja: " + BuildConfig.VERSION_NAME, 14, false);
+        version.setPadding(dp(a, 4), dp(a, 14), 0, dp(a, 2));
+        box.addView(version);
+        TextView updateStatus = text(a, "Sprawdzanie aktualizacji…", 12, false);
+        updateStatus.setTextColor(Color.LTGRAY);
+        updateStatus.setPadding(dp(a, 4), 0, 0, dp(a, 2));
         box.addView(updateStatus);
         Button update = button(a, "Sprawdź / zainstaluj aktualizację");
         update.setEnabled(false);
         box.addView(update);
 
-        Button clearCache = button(a, "Wyczyść cache");
-        clearCache.setOnClickListener(v -> confirmDel(a, "Wyczyść cache", () -> {
-            if (clearCacheAction != null) clearCacheAction.run();
-            else db.clearCache();
-            listener.onDataChanged();
-        }));
-        box.addView(clearCache);
+        PackageInfo webView = WebView.getCurrentWebViewPackage();
+        String webViewVersion = webView == null ? "brak" : webView.versionName;
+        TextView webViewInfo = text(a, "Android System WebView: " + webViewVersion, 13, false);
+        webViewInfo.setPadding(dp(a, 4), dp(a, 14), 0, dp(a, 2));
+        box.addView(webViewInfo);
+        Button updateWebView = button(a, "Aktualizuj Android System WebView");
+        updateWebView.setOnClickListener(v -> {
+            String pkg = webView == null ? "com.google.android.webview" : webView.packageName;
+            try {
+                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg)));
+            } catch (RuntimeException e) {
+                try {
+                    a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=" + pkg)));
+                } catch (RuntimeException ignored) {
+                    Toast.makeText(a, "Nie można otworzyć aktualizacji WebView", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+        box.addView(updateWebView);
 
         Button clearHistory = button(a, "Wyczyść historię oglądania");
         clearHistory.setOnClickListener(v -> confirmDel(a, "Wyczyść historię oglądania", () -> {
@@ -108,16 +98,38 @@ public final class SettingsDialog {
         }));
         box.addView(clearFavorites);
 
+        Button clearCache = button(a, "Wyczyść cache");
+        clearCache.setOnClickListener(v -> confirmDel(a, "Wyczyść cache", () -> {
+            if (clearCacheAction != null) clearCacheAction.run();
+            else db.clearCache();
+            listener.onDataChanged();
+        }));
+        box.addView(clearCache);
+        TextView cacheInfo = text(a, "Miniatury: cache adaptacyjny do ok. 400 MB. Starsze niż 24 h są usuwane automatycznie, a przy małej ilości miejsca limit sam maleje.", 12, false);
+        cacheInfo.setTextColor(Color.LTGRAY);
+        cacheInfo.setPadding(dp(a, 4), dp(a, 4), dp(a, 4), dp(a, 8));
+        box.addView(cacheInfo);
+
+        Button github = button(a, "GitHub");
+        github.setOnClickListener(v -> {
+            try {
+                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/jarczakpawel/CDA-Free-Player")));
+            } catch (RuntimeException e) {
+                Toast.makeText(a, "Brak przeglądarki na tym urządzeniu", Toast.LENGTH_LONG).show();
+            }
+        });
+        box.addView(github);
+
         ScrollView scroll = new ScrollView(a);
         scroll.setFillViewport(true);
         scroll.addView(box);
 
         AlertDialog dialog = new AlertDialog.Builder(a)
-                .setTitle("Ustawienia")
+                .setCustomTitle(title)
                 .setView(scroll)
                 .setPositiveButton("Zamknij", null)
                 .create();
-        dialog.setOnShowListener(x -> github.requestFocus());
+        dialog.setOnShowListener(x -> fontScale.requestFocus());
         dialog.show();
 
         updater.check(new UpdateManager.CheckCallback() {
@@ -126,7 +138,7 @@ public final class SettingsDialog {
                     updateStatus.setText("Dostępna wersja " + info.latestVersion + " • masz " + info.currentVersion);
                     update.setEnabled(true);
                     update.setOnClickListener(v -> updater.downloadAndInstall(info, new UpdateManager.InstallCallback() {
-                        @Override public void onStatus(String text) { updateStatus.setText(text); }
+                        @Override public void onStatus(String value) { updateStatus.setText(value); }
                         @Override public void onError(String error) {
                             updateStatus.setText("Błąd aktualizacji: " + error);
                             Toast.makeText(a, error, Toast.LENGTH_LONG).show();

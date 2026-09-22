@@ -363,13 +363,19 @@ public final class MainActivity extends Activity {
             images.clearCache();
         }));
         removeCollection.setOnClickListener(v -> toggleRemoveMode());
+        manualQuery.setShowSoftInputOnFocus(false);
         manualQuery.setOnFocusChangeListener((v, hasFocus) -> {
-            setImeAccess(hasFocus);
-            if (hasFocus) h.postDelayed(() -> {
-                if (!manualQuery.hasFocus()) return;
-                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                if (imm != null) imm.showSoftInput(manualQuery, InputMethodManager.SHOW_IMPLICIT);
-            }, 80);
+            if (!hasFocus) {
+                manualQuery.setShowSoftInputOnFocus(false);
+                setImeAccess(false);
+            }
+        });
+        manualQuery.setOnClickListener(v -> {
+            setImeAccess(true);
+            manualQuery.setShowSoftInputOnFocus(true);
+            manualQuery.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) h.post(() -> imm.showSoftInput(manualQuery, InputMethodManager.SHOW_IMPLICIT));
         });
         manualQuery.setOnEditorActionListener((v, action, event) -> {
             if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); return true; }
@@ -573,6 +579,7 @@ public final class MainActivity extends Activity {
     private void manualSearch() {
         String q = manualQuery.getText().toString().trim();
         if (q.isEmpty()) return;
+        manualQuery.setShowSoftInputOnFocus(false);
         manualQuery.clearFocus();
         setImeAccess(false);
         selectedYear = null;

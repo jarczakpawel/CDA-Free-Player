@@ -29,30 +29,28 @@ class SettingsWindow:
 
         top = tk.Frame(self.win, bg=PANEL, padx=18, pady=16)
         top.pack(fill="x")
-        tk.Label(top, text="Ustawienia", bg=PANEL, fg=TEXT, font=("Sans", 18, "bold")).pack(anchor="w")
-        tk.Label(top, text=f"{APP_NAME}  {VERSION}", bg=PANEL, fg=MUTED, font=("Sans", 10)).pack(anchor="w", pady=(4,0))
+        tk.Label(top, text="Ustawienia", bg=PANEL, fg=TEXT, font=("Sans", 18, "bold")).pack(side="left")
+        tk.Label(top, text=AUTHOR, bg=PANEL, fg=MUTED, font=("Sans", 10)).pack(side="right")
 
         body = tk.Frame(self.win, bg=BG, padx=18, pady=14)
         body.pack(fill="both", expand=True)
 
-        self._section(body, "Dane lokalne")
-        self._danger_row(body, "Wyczyść cache", "Usuwa wyszukiwania, miniatury, opisy i komentarze. Ostatnio oglądane i Ulubione zostają.", self._clear_cache)
-        self._danger_row(body, "Wyczyść historię oglądania", "Usuwa całą listę Ostatnio oglądane i zapisany postęp.", self.db.clear_history)
-        self._danger_row(body, "Wyczyść ulubione", "Usuwa wszystkie zapisane ulubione filmy.", self.db.clear_favorites)
-
         self._section(body, "Aktualizacja")
+        tk.Label(body, text=f"Wersja: {VERSION}", bg=BG, fg=TEXT, anchor="w").pack(fill="x", pady=(0,4))
         self.update_status = tk.Label(body, text="Sprawdzanie aktualizacji…", bg=BG, fg=MUTED, anchor="w", justify="left")
-        self.update_status.pack(fill="x", pady=(2,6))
-        self.update_button = self._button(body, "Pobierz aktualizację", self._download_update)
+        self.update_status.pack(fill="x", pady=(0,6))
+        self.update_button = self._button(body, "Sprawdź / zainstaluj aktualizację", self._download_update)
         self.update_button.pack(anchor="w")
         self.update_button.configure(state="disabled")
 
-        footer = tk.Frame(body, bg=BG)
-        footer.pack(fill="x", side="bottom", pady=(18,0))
-        tk.Label(footer, text=f"Autor: {AUTHOR}", bg=BG, fg=MUTED).pack(anchor="w")
-        link = tk.Label(footer, text=REPOSITORY_URL, bg=BG, fg=ACCENT, cursor="hand2")
-        link.pack(anchor="w", pady=(4,0))
-        link.bind("<Button-1>", lambda e: webbrowser.open(REPOSITORY_URL))
+        self._section(body, "Dane lokalne")
+        self._danger_row(body, "Wyczyść historię oglądania", "Usuwa całą listę Ostatnio oglądane i zapisany postęp.", self.db.clear_history)
+        self._danger_row(body, "Wyczyść ulubione", "Usuwa wszystkie zapisane ulubione filmy.", self.db.clear_favorites)
+        self._danger_row(body, "Wyczyść cache", "Usuwa wyszukiwania, miniatury, opisy i komentarze. Miniatury: do ~400 MB, max 24 h. Ostatnio oglądane i Ulubione zostają.", self._clear_cache)
+
+        self._section(body, "Projekt")
+        github = self._button(body, "GitHub", lambda: webbrowser.open(REPOSITORY_URL))
+        github.pack(anchor="w")
 
         self.update_events = queue.Queue()
         threading.Thread(target=self._check_update_worker, daemon=True).start()

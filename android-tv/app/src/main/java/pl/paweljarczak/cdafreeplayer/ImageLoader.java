@@ -26,19 +26,25 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class ImageLoader {
-    private static final long MAX_DISK = 96L * 1024 * 1024;
+    private static final long MAX_DISK = 384L * 1024 * 1024;
+    private static final long MIN_FREE_DISK = 512L * 1024 * 1024;
+    private static final long PRUNE_FLOOR = 48L * 1024 * 1024;
     private static final int MAX_DOWNLOAD = 8 * 1024 * 1024;
     private static final int TARGET_W = 360;
     private static final int TARGET_H = 210;
-    private static final long TOUCH_INTERVAL_MS = 6L * 60 * 60 * 1000;
+    private static final long TOUCH_INTERVAL_MS = 30L * 60 * 1000;
     private static final long MAX_AGE_MS = 24L * 60 * 60 * 1000;
 
     private final LruCache<String, Bitmap> mem;
     private final ThreadPoolExecutor pool;
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<WeakReference<ImageView>>> waiting = new ConcurrentHashMap<>();
     private final File dir;
+    private final AtomicLong diskBytes = new AtomicLong(-1);
+    private final AtomicBoolean pruneQueued = new AtomicBoolean();
     private volatile boolean closed;
     private volatile boolean paused;
 
@@ -63,7 +69,10 @@ public final class ImageLoader {
         pool.allowCoreThreadTimeOut(true);
         dir = new File(c.getCacheDir(), "thumbs");
         dir.mkdirs();
-        pool.execute(this::pruneDisk);
+        pruneQueued.set(true);
+        pool.execute(() -> {
+            try { pruneDisk(); } finally { pruneQueued.set(false); }
+        });
     }
 
     public void load(String url, ImageView v) {
@@ -100,6 +109,7 @@ public final class ImageLoader {
     public void pause() {
         paused = true;
         pool.getQueue().clear();
+        pruneQueued.set(false);
         waiting.clear();
     }
 
@@ -171,7 +181,13 @@ public final class ImageLoader {
             temporary.delete();
             throw e;
         }
-        if (!temporary.renameTo(destination)) temporary.delete();
+        if (!temporary.renameTo(destination)) {
+            temporary.delete();
+            return;
+        }
+        long known = diskBytes.get();
+        if (known >= 0) diskBytes.addAndGet(destination.length());
+        maybeSchedulePrune();
     }
 
     private static Bitmap decode(File f) {
@@ -201,33 +217,84 @@ public final class ImageLoader {
         mem.evictAll();
         waiting.clear();
         pool.getQueue().clear();
+        pruneQueued.set(false);
         pool.execute(() -> {
             try {
                 File[] files = dir.listFiles();
                 if (files != null) for (File f : files) f.delete();
                 dir.mkdirs();
+                diskBytes.set(0);
             } catch (Exception ignored) {}
         });
+    }
+
+    private void maybeSchedulePrune() {
+        if (closed) return;
+        long known = diskBytes.get();
+        long limit = diskLimit(Math.max(0, known));
+        long usable = dir.getUsableSpace();
+        boolean lowSpace = usable > 0 && usable < MIN_FREE_DISK;
+        if ((known >= 0 && known > limit) || lowSpace) {
+            if (pruneQueued.compareAndSet(false, true)) {
+                pool.execute(() -> {
+                    try { pruneDisk(); } finally { pruneQueued.set(false); }
+                });
+            }
+        }
+    }
+
+    private long diskLimit(long currentBytes) {
+        long usable = dir.getUsableSpace();
+        if (usable <= 0) return MAX_DISK;
+        long safeBudget = usable + currentBytes - MIN_FREE_DISK;
+        if (safeBudget <= 0) return 0;
+        return Math.min(MAX_DISK, safeBudget);
     }
 
     private void pruneDisk() {
         try {
             File[] files = dir.listFiles();
-            if (files == null) return;
-            long cutoff = System.currentTimeMillis() - MAX_AGE_MS;
+            if (files == null) { diskBytes.set(0); return; }
+            long now = System.currentTimeMillis();
+            long cutoff = now - MAX_AGE_MS;
             long total = 0;
             for (File f : files) {
+                if (!f.isFile()) continue;
+                if (f.getName().startsWith("thumb-") && f.getName().endsWith(".tmp")) {
+                    if (f.lastModified() <= 0 || f.lastModified() < now - 60L * 60 * 1000) f.delete();
+                    continue;
+                }
                 if (f.lastModified() > 0 && f.lastModified() < cutoff && f.delete()) continue;
                 total += f.length();
             }
             files = dir.listFiles();
-            if (files == null || total <= MAX_DISK) return;
-            Arrays.sort(files, Comparator.comparingLong(File::lastModified));
-            for (File f : files) {
-                if (total <= MAX_DISK * 3 / 4) break;
-                long len = f.length();
-                if (f.delete()) total -= len;
+            if (files == null) { diskBytes.set(0); return; }
+            long limit = diskLimit(total);
+            if (total > limit) {
+                Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+                long target = limit <= PRUNE_FLOOR ? limit : Math.max(PRUNE_FLOOR, limit * 7 / 8);
+                long protectAfter = now - 10L * 60 * 1000;
+                for (int pass = 0; pass < 2 && total > target; pass++) {
+                    for (File f : files) {
+                        if (total <= target) break;
+                        if (!f.isFile()) continue;
+                        if (f.getName().startsWith("thumb-") && f.getName().endsWith(".tmp")) continue;
+                        if (pass == 0 && f.lastModified() >= protectAfter) continue;
+                        long len = f.length();
+                        if (f.delete()) total -= len;
+                    }
+                }
             }
+            long actual = 0;
+            File[] current = dir.listFiles();
+            if (current != null) {
+                for (File f : current) {
+                    if (!f.isFile()) continue;
+                    if (f.getName().startsWith("thumb-") && f.getName().endsWith(".tmp")) continue;
+                    actual += f.length();
+                }
+            }
+            diskBytes.set(Math.max(0, actual));
         } catch (Exception ignored) {}
     }
 

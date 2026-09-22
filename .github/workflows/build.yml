@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test ! -s README.md
+          test -s README.md
           EXTRA_MD="$(find . -type f -name '*.md' ! -path './README.md' -print -quit)"
           if [[ -n "$EXTRA_MD" ]]; then
             echo "Unexpected documentation file: $EXTRA_MD" >&2

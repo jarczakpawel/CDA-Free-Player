@@ -26,6 +26,7 @@ class NativeWebViewSession:
     def _start(self):
         if self.proc is not None and self.proc.is_alive():
             return
+        started = time.monotonic()
         self.stop()
         ctx = mp.get_context("spawn")
         parent, child = ctx.Pipe(duplex=True)
@@ -45,7 +46,7 @@ class NativeWebViewSession:
             if self.conn.poll(0.2):
                 msg = self.conn.recv()
                 if msg.get("type") == "ready":
-                    log_event("native_webview_ready")
+                    log_event("native_webview_ready", ms=round((time.monotonic() - started) * 1000))
                     return
                 if msg.get("type") == "fatal":
                     raise NativeWebViewUnavailable(msg.get("error", "WebView fatal"))
@@ -58,6 +59,8 @@ class NativeWebViewSession:
 
     def fetch(self, url, cancel_event=None, expect_player=False):
         with self.lock:
+            started = time.monotonic()
+            interactive_logged = False
             if cancel_event is not None and cancel_event.is_set():
                 raise SearchCancelled("Wyszukiwanie anulowane.")
             self._start()
@@ -86,6 +89,9 @@ class NativeWebViewSession:
                         self.events.put(("security_verification","native_hidden",url))
                     elif event == "interactive":
                         self.events.put(("security_verification","native_interactive",url))
+                        if not interactive_logged:
+                            interactive_logged = True
+                            log_event("native_webview_challenge", url=url, ms=round((time.monotonic() - started) * 1000))
                     continue
                 if msg.get("type") == "fatal":
                     raise NativeWebViewUnavailable(msg.get("error", "WebView fatal"))
@@ -95,7 +101,7 @@ class NativeWebViewSession:
                     if not msg.get("ok"):
                         raise RuntimeError(msg.get("error", "WebView error"))
                     result = msg
-                                                                                 
+                    log_event("native_webview_result", url=url, ms=round((time.monotonic() - started) * 1000), interactive=interactive_logged)
                     self.stop()
                     return result
 

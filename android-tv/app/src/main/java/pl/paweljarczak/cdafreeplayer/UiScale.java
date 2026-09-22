@@ -7,13 +7,15 @@ public final class UiScale {
     private static final String PREFS = "ui";
     private static final String KEY = "font_scale";
     private static final float DEFAULT = 1.0f;
-    private static final float[] VALUES = {0.90f, 1.00f, 1.10f, 1.20f, 1.30f};
+    private static final float[] VALUES = {0.90f, 1.00f, 1.10f, 1.20f, 1.30f, 1.40f, 1.50f};
     private static final String[] LABELS = {
             "Małe (90%)",
-            "Średnie (100%)",
+            "Średnie (100%) - domyślne",
             "Duże (110%)",
             "Bardzo duże (120%)",
-            "Największe (130%)"
+            "XL (130%)",
+            "XXL (140%)",
+            "Maksymalne (150%)"
     };
 
     private UiScale() { }

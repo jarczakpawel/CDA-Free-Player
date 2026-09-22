@@ -23,14 +23,13 @@
                 android:orientation="vertical"
                 android:padding="14dp">
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:paddingBottom="14dp"
-                    android:text="@string/app_name"
-                    android:textColor="@color/text"
-                    android:textSize="28sp"
-                    android:textStyle="bold"/>
+                <ImageView
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
+                    android:layout_marginBottom="14dp"
+                    android:contentDescription="CDA"
+                    android:scaleType="fitCenter"
+                    android:src="@mipmap/ic_launcher"/>
 
                 <Button
                     android:id="@+id/browse"

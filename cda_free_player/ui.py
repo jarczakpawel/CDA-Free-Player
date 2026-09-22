@@ -1,4 +1,5 @@
 import queue
+import shutil
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,9 @@ from .config import (
     SELECTED,
     TEXT,
     THUMB_DIR,
+    THUMB_CACHE_MAX,
+    THUMB_CACHE_FREE_RESERVE,
+    THUMB_TOUCH_INTERVAL,
     LOG_FILE,
     APP_ICON,
 )
@@ -72,7 +76,10 @@ class App:
         self.play_preparing = False
         self.play_cancel = threading.Event()
         self.thumbnail_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cda-thumb")
-        self.thumbnail_pool.submit(self.prune_thumbnail_cache)
+        self.thumbnail_cache_bytes = -1
+        self.thumbnail_prune_pending = False
+        self.thumbnail_prune_lock = threading.Lock()
+        self.schedule_thumbnail_prune(force=True)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.client = CdaClient(self.events)
         self.db = Database()
@@ -2674,6 +2681,12 @@ class App:
 
         if path.exists():
             try:
+                now = time.time()
+                if now - path.stat().st_mtime > THUMB_TOUCH_INTERVAL:
+                    try:
+                        path.touch()
+                    except OSError:
+                        pass
                 image = Image.open(path).convert("RGB")
                 image.thumbnail((210, 118))
                 photo = ImageTk.PhotoImage(image)
@@ -2702,12 +2715,27 @@ class App:
             )
             response.raise_for_status()
 
-            path.write_bytes(response.content)
-
             image = Image.open(
                 BytesIO(response.content),
             ).convert("RGB")
             image.thumbnail((210, 118))
+
+            temporary = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+            try:
+                image.save(temporary, format="JPEG", quality=86)
+                temporary.replace(path)
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+            if self.thumbnail_cache_bytes >= 0:
+                try:
+                    self.thumbnail_cache_bytes += path.stat().st_size
+                except OSError:
+                    pass
+            self.schedule_thumbnail_prune()
 
             self.events.put((
                 "thumb",
@@ -3035,14 +3063,75 @@ class App:
         while len(self.comments_memory) > 12:
             self.comments_memory.pop(next(iter(self.comments_memory)))
 
-    def prune_thumbnail_cache(self):
-        cutoff = time.time() - CACHE_TTL
+    def schedule_thumbnail_prune(self, force=False):
+        if self.closed:
+            return
         try:
-            for path in THUMB_DIR.iterdir():
-                if path.is_file() and path.stat().st_mtime < cutoff:
-                    path.unlink()
+            free = shutil.disk_usage(THUMB_DIR).free
+        except OSError:
+            free = THUMB_CACHE_FREE_RESERVE
+        needs = force or self.thumbnail_cache_bytes > THUMB_CACHE_MAX or free < THUMB_CACHE_FREE_RESERVE
+        if not needs:
+            return
+        with self.thumbnail_prune_lock:
+            if self.thumbnail_prune_pending:
+                return
+            self.thumbnail_prune_pending = True
+        self.thumbnail_pool.submit(self.prune_thumbnail_cache)
+
+    def prune_thumbnail_cache(self):
+        try:
+            now = time.time()
+            cutoff = now - CACHE_TTL
+            files = [p for p in THUMB_DIR.iterdir() if p.is_file()]
+            total = 0
+            kept = []
+            for path in files:
+                try:
+                    st = path.stat()
+                    if st.st_mtime < cutoff:
+                        path.unlink()
+                        continue
+                    total += st.st_size
+                    kept.append((st.st_mtime, st.st_size, path))
+                except OSError:
+                    pass
+
+            try:
+                free = shutil.disk_usage(THUMB_DIR).free
+                safe_budget = max(0, free + total - THUMB_CACHE_FREE_RESERVE)
+                limit = min(THUMB_CACHE_MAX, safe_budget)
+            except OSError:
+                limit = THUMB_CACHE_MAX
+
+            if total > limit:
+                target = limit if limit <= 48 * 1024 * 1024 else max(48 * 1024 * 1024, limit * 7 // 8)
+                protect_after = now - 10 * 60
+                kept.sort(key=lambda x: x[0])
+                for protect_recent in (True, False):
+                    for mtime, size, path in kept:
+                        if total <= target:
+                            break
+                        if protect_recent and mtime >= protect_after:
+                            continue
+                        try:
+                            path.unlink()
+                            total -= size
+                        except OSError:
+                            pass
+                    if total <= target:
+                        break
+            try:
+                self.thumbnail_cache_bytes = sum(
+                    path.stat().st_size for path in THUMB_DIR.iterdir() if path.is_file()
+                )
+            except OSError:
+                self.thumbnail_cache_bytes = max(0, total)
         except OSError:
             pass
+        finally:
+            with self.thumbnail_prune_lock:
+                self.thumbnail_prune_pending = False
 
     def clear_transient_cache(self):
         self.metadata_memory.clear()
@@ -3052,6 +3141,7 @@ class App:
             for path in THUMB_DIR.iterdir():
                 if path.is_file():
                     path.unlink()
+            self.thumbnail_cache_bytes = 0
         except OSError:
             pass
         self.set_detail_metadata(None)
