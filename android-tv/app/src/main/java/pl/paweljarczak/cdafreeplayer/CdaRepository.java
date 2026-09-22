@@ -241,7 +241,7 @@ public final class CdaRepository {
         RequestToken token = new RequestToken();
         playerToken = token;
         requests.add(token);
-        fetchPlayerAttempt(m, token, listener, true);
+        fetchPlayerAttempt(m, token, listener, false);
     }
 
     private void fetchPlayerAttempt(Movie m, RequestToken token, PlayerListener listener, boolean forceWeb) {
@@ -261,8 +261,8 @@ public final class CdaRepository {
                             " playable=" + (parsed != null && parsed.hasPlayableSource()) +
                             " ms=" + (android.os.SystemClock.elapsedRealtime() - started));
 
-                    if (parsed != null && (parsed.premium || (!parsed.type.isEmpty() && !"plain".equals(parsed.type)))) {
-                        playerFailure(token, listener, "Materiał Premium lub niedostępny");
+                    if (parsed != null && !parsed.type.isEmpty() && !"plain".equals(parsed.type)) {
+                        playerFailure(token, listener, "Materiał niedostępny");
                         return;
                     }
 
@@ -354,12 +354,12 @@ public final class CdaRepository {
     }
 
     private static boolean validPlayer(PlayerData p) {
-        return p != null && !p.premium && (p.type.isEmpty() || "plain".equals(p.type)) && p.hasPlayableSource();
+        return p != null && (p.type.isEmpty() || "plain".equals(p.type)) && p.hasPlayableSource();
     }
 
     private static String playerError(PlayerData p) {
         if (p == null) return "Brak danych playera CDA (WebView)";
-        if (p.premium || (!p.type.isEmpty() && !"plain".equals(p.type))) return "Materiał Premium lub niedostępny";
+        if (!p.type.isEmpty() && !"plain".equals(p.type)) return "Materiał niedostępny";
         if (p.canResolveQuality()) return "CDA nie zwróciło działającego linku do strumienia";
         return "Brak darmowego strumienia w danych playera";
     }

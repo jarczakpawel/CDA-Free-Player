@@ -41,7 +41,7 @@ public final class CdaGateway {
 
     public void fetch(String url, boolean allowWeb, RequestToken token, Callback cb) {
         if (closed || token != null && token.isCancelled()) return;
-        if (allowWeb && !http.hasSession(url)) {
+        if (allowWeb && (!web.isFullSitePrepared() || !http.hasSession(url))) {
             fetchWeb(url, token, cb);
             return;
         }
@@ -85,7 +85,6 @@ public final class CdaGateway {
     public PlayerData resolvePlayer(Movie movie, PlayerData input, RequestToken token) throws Exception {
         if (input == null) return null;
         PlayerData p = input.copy();
-        if (p.premium) return p;
 
         if (!p.hasPlayableSource() && p.canResolveQuality()) {
             ArrayList<Map.Entry<String, Object>> candidates = new ArrayList<>(p.qualities.entrySet());

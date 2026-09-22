@@ -178,6 +178,12 @@ public final class CdaParser {
 
     private static boolean isPremium(Element tile) {
         if (tile == null) return false;
+        if (tile.outerHtml().toLowerCase(Locale.ROOT).contains("/vid/premium/")) return true;
+        for (Element image : tile.select("img[src],img[data-src],img[data-original],source[src],source[srcset]")) {
+            for (String attr : new String[]{"src", "data-src", "data-original", "srcset"}) {
+                if (image.hasAttr(attr) && image.attr(attr).toLowerCase(Locale.ROOT).contains("/vid/premium/")) return true;
+            }
+        }
         String text = tile.text().toLowerCase(Locale.ROOT);
         if (Pattern.compile("(?:^|[\\s|•·:/_-])premium(?:$|[\\s|•·:/_-])").matcher(text).find()) return true;
         for (Element e : tile.getAllElements()) {
@@ -247,12 +253,8 @@ public final class CdaParser {
             JSONObject root = findPlayerRoot(html, doc);
             if (root == null) return null;
             PlayerData p = new PlayerData();
-            p.premium = root.optBoolean("premium", false) || root.optInt("premium", 0) == 1;
-
             JSONObject v = root.optJSONObject("video");
             if (v == null) return null;
-            p.premium |= v.optBoolean("premium", false) || v.optInt("premium", 0) == 1;
-
             p.type = v.optString("type", "");
             p.dash = normalizeStreamUrl(v.optString("manifest", ""));
             p.hls = normalizeStreamUrl(v.optString("manifest_apple", ""));

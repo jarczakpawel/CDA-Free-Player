@@ -58,8 +58,8 @@ public final class CdaWebSession {
 
     private String captureScript;
     private ScriptHandler captureHook;
-    private Runnable inspectTask, timeoutTask;
-    private boolean destroyed;
+    private Runnable inspectTask, timeoutTask, fullSiteTask;
+    private boolean destroyed, fullSitePrepared, fullSiteBootstrap;
 
     private static final class Job {
         final String id = UUID.randomUUID().toString();
@@ -133,8 +133,25 @@ public final class CdaWebSession {
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView v, String u) {
                 Job job = current;
-                if (job == null || !samePage(job.url, u)) return;
-                if (job != null && job.expectPlayer) {
+                if (job == null) return;
+                if (fullSiteBootstrap) {
+                    Uri uri = Uri.parse(u == null ? "" : u);
+                    String host = uri.getHost();
+                    if (host != null && (host.equalsIgnoreCase("www.cda.pl") || host.equalsIgnoreCase("cda.pl"))) {
+                        fullSiteBootstrap = false;
+                        fullSitePrepared = true;
+                        if (fullSiteTask != null) h.removeCallbacks(fullSiteTask);
+                        fullSiteTask = null;
+                        Log.i(TAG, "CDA full-site session prepared");
+                        h.post(() -> {
+                            if (job == current && web != null) web.loadUrl(job.url);
+                        });
+                    }
+                    return;
+                }
+                if (!samePage(job.url, u)) return;
+                Log.i(TAG, (job.expectPlayer ? "player" : "page") + " WebView ready: " + safeUrl(u));
+                if (job.expectPlayer) {
                     try {
                         v.evaluateJavascript(scriptFor(job), ignored -> scheduleInspect(job, 0));
                         return;
@@ -183,14 +200,14 @@ public final class CdaWebSession {
                             public void onPostMessage(WebView view, WebMessageCompat message, Uri sourceOrigin,
                                                       boolean isMainFrame, JavaScriptReplyProxy replyProxy) {
                                 Job job = current;
-                                if (job == null || !job.expectPlayer || job.token != null && job.token.isCancelled()) return;
+                                if (job == null || !job.expectPlayer || fullSiteBootstrap || job.token != null && job.token.isCancelled()) return;
                                 try {
                                     JSONObject data = new JSONObject(message.getData());
                                     if (!job.id.equals(data.optString("job"))) return;
                                     String raw = data.optString("data");
                                     if (raw.isEmpty() || raw.length() > 2 * 1024 * 1024) return;
                                     PlayerData parsed = CdaParser.parsePlayerData(CdaParser.PLAYER_DATA_PREFIX + raw);
-                                    if (parsed == null || !parsed.premium && !parsed.hasPlayableSource() && !parsed.canResolveQuality()) return;
+                                    if (parsed == null || !parsed.hasPlayableSource() && !parsed.canResolveQuality()) return;
                                     capturedPlayerData = raw;
                                     Log.i(TAG, "player_data captured; bytes=" + raw.length() + "; mainFrame=" + isMainFrame);
                                     finishCurrent(job, CdaParser.PLAYER_DATA_PREFIX + raw);
@@ -202,6 +219,8 @@ public final class CdaWebSession {
             Log.w(TAG, "Player capture bridge unavailable: " + t);
         }
     }
+
+    public boolean isFullSitePrepared() { return fullSitePrepared; }
 
     public void fetch(String url, RequestToken token, Callback cb) {
         enqueue(new Job(url, token, cb, false));
@@ -260,8 +279,23 @@ public final class CdaWebSession {
         }
         timeoutTask = () -> failCurrent(job, "Przekroczono czas ładowania strony CDA");
         h.postDelayed(timeoutTask, 120000);
-        try { web.loadUrl(job.url); }
-        catch (RuntimeException e) { failCurrent(job, "Nie można otworzyć strony CDA"); }
+        try {
+            if (!fullSitePrepared) {
+                fullSiteBootstrap = true;
+                Log.i(TAG, "Preparing CDA full-site session");
+                fullSiteTask = () -> {
+                    if (job != current || web == null || !fullSiteBootstrap) return;
+                    fullSiteBootstrap = false;
+                    fullSitePrepared = true;
+                    Log.w(TAG, "CDA full-site bootstrap timed out; continuing with current site mode");
+                    web.loadUrl(job.url);
+                };
+                h.postDelayed(fullSiteTask, 8000);
+                web.loadUrl("https://m.cda.pl/gofullcda");
+            } else {
+                web.loadUrl(job.url);
+            }
+        } catch (RuntimeException e) { failCurrent(job, "Nie można otworzyć strony CDA"); }
     }
 
     private void inspect(Job job) {
@@ -300,7 +334,7 @@ public final class CdaWebSession {
             if (state.startsWith("PD:")) {
                 String raw = state.substring(3);
                 PlayerData parsed = CdaParser.parsePlayerData(CdaParser.PLAYER_DATA_PREFIX + raw);
-                if (parsed != null && (parsed.premium || parsed.hasPlayableSource() || parsed.canResolveQuality())) {
+                if (parsed != null && (parsed.hasPlayableSource() || parsed.canResolveQuality())) {
                     capturedPlayerData = raw;
                     finishCurrent(job, CdaParser.PLAYER_DATA_PREFIX + raw);
                     return;
@@ -407,8 +441,11 @@ public final class CdaWebSession {
     private void clearPending() {
         if (inspectTask != null) h.removeCallbacks(inspectTask);
         if (timeoutTask != null) h.removeCallbacks(timeoutTask);
+        if (fullSiteTask != null) h.removeCallbacks(fullSiteTask);
         inspectTask = null;
         timeoutTask = null;
+        fullSiteTask = null;
+        fullSiteBootstrap = false;
     }
 
     private void failCurrent(Job job, String error) {

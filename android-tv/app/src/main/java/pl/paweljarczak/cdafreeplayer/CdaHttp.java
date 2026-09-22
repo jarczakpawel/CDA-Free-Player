@@ -64,7 +64,7 @@ public final class CdaHttp {
     public String videoGetLink(String pageUrl, String videoId, PlayerData data,
                                Object qualityValue, RequestToken token) throws Exception {
         checkCancelled(token);
-        if (data == null || data.premium || data.ts == null || data.ts == JSONObject.NULL || data.hash2.isEmpty()) return "";
+        if (data == null || data.ts == null || data.ts == JSONObject.NULL || data.hash2.isEmpty()) return "";
 
         JSONObject request = new JSONObject();
         request.put("jsonrpc", "2.0");
@@ -79,7 +79,13 @@ public final class CdaHttp {
         request.put("id", 2);
 
         byte[] payload = request.toString().getBytes(StandardCharsets.UTF_8);
-        HttpURLConnection c = open(pageUrl, "POST", pageUrl);
+        String result = postVideoGetLink("https://www.cda.pl/video/" + videoId + "/vjs", pageUrl, payload, token);
+        if (!result.isEmpty()) return result;
+        return postVideoGetLink(pageUrl, pageUrl, payload, token);
+    }
+
+    private String postVideoGetLink(String endpoint, String referer, byte[] payload, RequestToken token) throws Exception {
+        HttpURLConnection c = open(endpoint, "POST", referer);
         c.setDoOutput(true);
         c.setRequestProperty("Accept", "application/json, text/plain, */*");
         c.setRequestProperty("Content-Type", "application/json");
@@ -91,7 +97,7 @@ public final class CdaHttp {
             try (OutputStream out = c.getOutputStream()) { out.write(payload); }
             int status = c.getResponseCode();
             String body = readBody(c, status, token);
-            syncCookies(pageUrl, c);
+            syncCookies(endpoint, c);
             if (status != 200 || body.isEmpty()) return "";
             JSONObject root = new JSONObject(body);
             JSONObject result = root.optJSONObject("result");
