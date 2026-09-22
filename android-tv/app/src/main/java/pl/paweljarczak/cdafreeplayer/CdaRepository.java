@@ -261,11 +261,6 @@ public final class CdaRepository {
                             " playable=" + (parsed != null && parsed.hasPlayableSource()) +
                             " ms=" + (android.os.SystemClock.elapsedRealtime() - started));
 
-                    if (parsed != null && !parsed.type.isEmpty() && !"plain".equals(parsed.type)) {
-                        playerFailure(token, listener, "Materiał niedostępny");
-                        return;
-                    }
-
                     PlayerData resolved = parsed;
                     if (resolved != null) {
                         try {
@@ -354,12 +349,11 @@ public final class CdaRepository {
     }
 
     private static boolean validPlayer(PlayerData p) {
-        return p != null && (p.type.isEmpty() || "plain".equals(p.type)) && p.hasPlayableSource();
+        return p != null && p.hasPlayableSource();
     }
 
     private static String playerError(PlayerData p) {
         if (p == null) return "Brak danych playera CDA (WebView)";
-        if (!p.type.isEmpty() && !"plain".equals(p.type)) return "Materiał niedostępny";
         if (p.canResolveQuality()) return "CDA nie zwróciło działającego linku do strumienia";
         return "Brak darmowego strumienia w danych playera";
     }

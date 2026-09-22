@@ -31,10 +31,6 @@ class Player:
         if not isinstance(pdata, dict) or not isinstance(pdata.get("video"), dict):
             return None
         video = pdata["video"]
-        if pdata.get("premium") in (True, 1, "1", "true") or video.get("premium") in (True, 1, "1", "true"):
-            raise RuntimeError("Materiał Premium - pominięty.")
-        if video.get("type") not in (None, "", "plain"):
-            raise RuntimeError("Materiał niedostępny.")
         video = pdata.get(
             "video",
             {},

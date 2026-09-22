@@ -3123,11 +3123,6 @@ class App:
                     "Brak player_data.",
                 )
 
-            if pdata.get("premium") in (True, 1, "1", "true"):
-                raise RuntimeError(
-                    "Materiał Premium - pominięty.",
-                )
-
             kind, quality, log_path = self.player.play(
                 item,
                 pdata,

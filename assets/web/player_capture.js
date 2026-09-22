@@ -21,10 +21,7 @@
                 return typeof url === 'string' && /^(https?:)?\/\//.test(url);
             }) ||
                 (video.hash2 && video.qualities && (video.ts || (data.api && data.api.ts)));
-            var premium = [data.premium, video.premium].some(function (value) {
-                return value === true || value === 1 || value === '1' || value === 'true';
-            });
-            if (!ready && !premium) return '';
+            if (!ready) return '';
             if (raw !== window.__CDA_FP_CAPTURED) {
                 window.__CDA_FP_CAPTURED = raw;
                 if (window.CdaFreePlayerBridge) {
@@ -49,7 +46,7 @@
         else if (/\.m3u8(?:\?|$)/i.test(clean)) video.manifest_apple = value;
         else if (/\.(?:mp4|m4v)(?:\?|$)/i.test(clean)) video.file = value;
         else return '';
-        return emit({premium: false, video: video});
+        return emit({video: video});
     }
     function one(node) {
         if (!node || node.nodeType !== 1) return '';
