@@ -5,9 +5,9 @@ def get_version():
     root = Path(__file__).resolve().parent.parent
     version_file = root / "VERSION"
     try:
-        return version_file.read_text(encoding="utf-8").strip() or "1.0.20"
+        return version_file.read_text(encoding="utf-8").strip() or "1.0.21"
     except OSError:
-        return "1.0.20"
+        return "1.0.21"
 
 
 VERSION = get_version()

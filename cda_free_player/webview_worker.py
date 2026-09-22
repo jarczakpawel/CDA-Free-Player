@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 import threading
@@ -33,6 +34,8 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
     if sys.stderr is None: sys.stderr = open(os.devnull, "w")
     try:
         import webview
+        if os.environ.get("CDAFP_DEBUG", "").strip() not in ("1", "true", "yes", "on"):
+            logging.getLogger("pywebview").setLevel(logging.CRITICAL)
         capture = Path(script_path).read_text(encoding="utf-8")
         Path(storage).mkdir(parents=True, exist_ok=True)
         window = webview.create_window(
@@ -45,51 +48,99 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
         return
     loaded = threading.Event()
     window.events.loaded += loaded.set
+    bridge_ready = getattr(window.events, "_pywebviewready", None)
+    if bridge_ready is not None:
+        window.events.before_load += bridge_ready.clear
 
     def fetch(req):
         request_id, url = req["id"], req["url"]
         expect_player = req.get("expect_player", False)
         conn.send({"type": "event", "event": "loading", "id": request_id, "url": url})
         loaded.clear()
+        if bridge_ready is not None:
+            bridge_ready.clear()
         window.hide()
         window.load_url(url)
         deadline = time.monotonic() + 120
         clean_since = 0
         shown = False
         html = ""
+        capture_url = ""
+        started = time.monotonic()
+
         while time.monotonic() < deadline:
-            if not loaded.wait(0.2): continue
-            time.sleep(0.2)
+            if not loaded.wait(0.25):
+                continue
+            time.sleep(0.15)
             current_url = window.get_current_url() or ""
             if urlparse(current_url).hostname not in ("cda.pl", "www.cda.pl", "m.cda.pl"):
                 continue
             target, actual = urlparse(url).path, urlparse(current_url).path
             if actual != target and not (expect_player and actual.startswith(target + "/")):
                 continue
-            state = window.evaluate_js("document.readyState")
-            if state != "complete": continue
-            if expect_player:
-                window.evaluate_js(capture)
-                raw = window.evaluate_js("window.__CDA_FP_READ_PLAYER ? window.__CDA_FP_READ_PLAYER() : ''")
-                if raw:
-                    html = "__CDA_PLAYER_DATA__" + raw
-                    break
-            html = window.evaluate_js("document.documentElement ? document.documentElement.outerHTML : ''") or ""
-            if is_challenge(html):
+            if bridge_ready is not None and not bridge_ready.wait(4):
+                if not shown and time.monotonic() - started >= 1.5:
+                    shown = True
+                    conn.send({"type": "event", "event": "interactive", "id": request_id, "url": current_url})
+                    window.set_title("CDA Free Player - Weryfikacja zabezpieczeń")
+                    window.show()
+                continue
+
+            try:
+                state = window.evaluate_js("document.readyState")
+                if state != "complete":
+                    continue
+                probe = window.evaluate_js(
+                    "(document.title || '') + '\n' + "
+                    "(document.body ? document.body.innerText.slice(0, 2400) : '')"
+                ) or ""
+            except Exception:
+                if bridge_ready is not None:
+                    bridge_ready.clear()
+                time.sleep(0.2)
+                continue
+
+            if is_challenge(probe):
                 clean_since = 0
                 if not shown:
                     shown = True
                     conn.send({"type": "event", "event": "interactive", "id": request_id, "url": current_url})
                     window.set_title("CDA Free Player - Weryfikacja zabezpieczeń")
                     window.show()
+                time.sleep(0.25)
                 continue
-            if not html: continue
-            if not clean_since: clean_since = time.monotonic()
+
+            if expect_player:
+                try:
+                    if capture_url != current_url:
+                        window.run_js(capture)
+                        capture_url = current_url
+                    raw = window.evaluate_js("window.__CDA_FP_READ_PLAYER ? window.__CDA_FP_READ_PLAYER() : ''")
+                except Exception:
+                    raw = ""
+                if raw:
+                    html = "__CDA_PLAYER_DATA__" + raw
+                    break
+
+            if not clean_since:
+                clean_since = time.monotonic()
             settle = 12 if expect_player else 0.4
-            if time.monotonic() - clean_since >= settle: break
+            if time.monotonic() - clean_since < settle:
+                time.sleep(0.2)
+                continue
+            try:
+                html = window.evaluate_js("document.documentElement ? document.documentElement.outerHTML : ''") or ""
+            except Exception:
+                html = ""
+            if html:
+                break
         else:
             raise RuntimeError("Przekroczono czas ładowania strony CDA")
-        user_agent = window.evaluate_js("navigator.userAgent") or ""
+
+        try:
+            user_agent = window.evaluate_js("navigator.userAgent") or ""
+        except Exception:
+            user_agent = ""
         cookies = serialize_cookies(window.get_cookies())
         window.hide()
         window.set_title("CDA Free Player")

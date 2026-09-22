@@ -31,186 +31,137 @@ class Player:
         if not isinstance(pdata, dict) or not isinstance(pdata.get("video"), dict):
             return None
         video = pdata["video"]
-        video = pdata.get(
-            "video",
-            {},
-        )
-        qualities = video.get(
-            "qualities",
-            {},
-        )
 
-        dash_fallback = None
-
-        if isinstance(
-            qualities,
-            dict,
-        ):
-            candidates = []
-
-            for label, value in qualities.items():
-                match = re.search(
-                    r"(\d+)",
-                    str(label),
-                )
-
-                if match:
-                    candidates.append((
-                        int(
-                            match.group(1)
-                        ),
-                        label,
-                        value,
-                    ))
-
-            candidates.sort(
-                reverse=True,
-            )
-
-            for height, label, value in candidates:
-                stream = self.client.post_video_get_link(
-                    item,
-                    pdata,
-                    value,
-                )
-
-                if not stream:
-                    continue
-
-                if stream.startswith("//"):
-                    stream = (
-                        "https:"
-                        + stream
-                    )
-
-                clean = (
-                    stream.lower()
-                    .split("?", 1)[0]
-                )
-
-                if clean.endswith(".mp4"):
-                    return {
-                        "kind": "mp4",
-                        "quality": label,
-                        "video": stream,
-                        "audio": None,
-                        "source": "videoGetLink",
-                    }
-
-                if clean.endswith(".mpd"):
-                    tracks = self._mpd_tracks(
-                        item,
-                        stream,
-                        height,
-                    )
-
-                    if tracks:
-                        tracks[
-                            "quality"
-                        ] = label
-                        tracks[
-                            "source"
-                        ] = "mpd-direct-range"
-                        return tracks
-
-                    if dash_fallback is None:
-                        dash_fallback = {
-                            "kind": "dash",
-                            "quality": label,
-                            "video": stream,
-                            "audio": None,
-                            "source": "videoGetLink-mpd-fallback",
-                        }
-                    continue
-
-                if clean.endswith(".m3u8"):
-                    return {
-                        "kind": "hls",
-                        "quality": label,
-                        "video": stream,
-                        "audio": None,
-                        "source": "videoGetLink",
-                    }
-
-        dash = video.get(
-            "manifest"
-        )
-
+        # Match Android TV: use sources already present in player_data first.
+        # videoGetLink is only a fallback when player_data has no usable source.
+        dash = self._normalize_stream_url(item["url"], video.get("manifest"))
         if dash:
-            if dash.startswith("//"):
-                dash = (
-                    "https:"
-                    + dash
-                )
+            resolved = self._mpd_tracks(item, dash, None)
+            if resolved:
+                resolved.setdefault("quality", "auto")
+                resolved["source"] = "player_data-dash"
+                return resolved
 
-            tracks = self._mpd_tracks(
-                item,
-                dash,
-                None,
-            )
-
-            if tracks:
-                tracks[
-                    "quality"
-                ] = "auto-max"
-                tracks[
-                    "source"
-                ] = "player_data-mpd-direct-range"
-                return tracks
-
-            if dash_fallback is None:
-                dash_fallback = {
-                    "kind": "dash",
+        hls = self._normalize_stream_url(item["url"], video.get("manifest_apple"))
+        if hls:
+            selected_hls = self._hls_candidate(item, hls)
+            if selected_hls:
+                return {
+                    "kind": "hls",
                     "quality": "auto",
-                    "video": dash,
+                    "video": selected_hls,
                     "audio": None,
-                    "source": "player_data-mpd-fallback",
+                    "source": "player_data-hls",
                 }
 
-        hls = video.get(
-            "manifest_apple"
-        )
-
-        if hls:
-            if hls.startswith("//"):
-                hls = (
-                    "https:"
-                    + hls
-                )
-
-            return {
-                "kind": "hls",
-                "quality": "auto",
-                "video": hls,
-                "audio": None,
-                "source": "player_data-hls",
-            }
-
-        if dash_fallback is not None:
-            return dash_fallback
-
-        direct = video.get(
-            "file"
-        )
-
-        if (
-            direct
-            and direct.startswith(
-                "http"
-            )
-        ):
+        direct = self._normalize_stream_url(item["url"], video.get("file"))
+        if direct and direct.startswith(("http://", "https://")):
             return {
                 "kind": "mp4",
-                "quality": video.get(
-                    "quality",
-                    "",
-                ),
+                "quality": video.get("quality", ""),
                 "video": direct,
                 "audio": None,
                 "source": "player_data-file",
             }
 
+        qualities = video.get("qualities", {})
+        if not isinstance(qualities, dict):
+            return None
+
+        candidates = []
+        for label, value in qualities.items():
+            match = re.search(r"(\d+)", str(label))
+            candidates.append((int(match.group(1)) if match else 0, str(label), value))
+        candidates.sort(reverse=True)
+
+        for height, label, value in candidates:
+            stream = self.client.post_video_get_link(item, pdata, value)
+            if not stream:
+                continue
+            resolved = self._candidate_from_stream(item, stream, height, label, "videoGetLink")
+            if resolved:
+                return resolved
         return None
+
+    @staticmethod
+    def _normalize_stream_url(base_url, value):
+        if not isinstance(value, str):
+            return ""
+        value = value.strip()
+        if not value:
+            return ""
+        if value.startswith("//"):
+            return "https:" + value
+        return urljoin(base_url, value)
+
+    def _candidate_from_stream(self, item, stream, height, label, source):
+        stream = self._normalize_stream_url(item["url"], stream)
+        if not stream:
+            return None
+        clean = stream.lower().split("?", 1)[0]
+        if clean.endswith((".mp4", ".m4v")):
+            return {"kind": "mp4", "quality": label, "video": stream, "audio": None, "source": source}
+        if clean.endswith(".mpd"):
+            resolved = self._mpd_tracks(item, stream, height)
+            if resolved:
+                resolved["quality"] = label
+                resolved["source"] = source + "-dash"
+            return resolved
+        if clean.endswith(".m3u8"):
+            selected = self._hls_candidate(item, stream)
+            if selected:
+                return {"kind": "hls", "quality": label, "video": selected, "audio": None, "source": source + "-hls"}
+            return None
+        if stream.startswith(("http://", "https://")):
+            return {"kind": "mp4", "quality": label, "video": stream, "audio": None, "source": source + "-direct"}
+        return None
+
+    def _hls_candidate(self, item, manifest_url):
+        client = self.client.http_client()
+        if not client:
+            return manifest_url
+        try:
+            response = client.get(manifest_url, headers={"Referer": item["url"]})
+            response.raise_for_status()
+            text = response.text
+            final_url = str(response.url)
+            if self._hls_has_unsupported_key(text):
+                log_event("hls_source_skipped", id=item["id"], reason="unsupported-key-scheme")
+                return None
+
+            variants = []
+            lines = [line.strip() for line in text.splitlines()]
+            for index, line in enumerate(lines):
+                if not line.upper().startswith("#EXT-X-STREAM-INF:"):
+                    continue
+                match = re.search(r"(?:AVERAGE-)?BANDWIDTH=(\d+)", line, re.I)
+                bandwidth = int(match.group(1)) if match else 0
+                for uri in lines[index + 1:]:
+                    if not uri or uri.startswith("#"):
+                        continue
+                    variants.append((bandwidth, urljoin(final_url, uri)))
+                    break
+            if not variants:
+                return final_url
+
+            variants.sort(key=lambda entry: entry[0], reverse=True)
+            selected = variants[0][1]
+            child = client.get(selected, headers={"Referer": item["url"]})
+            child.raise_for_status()
+            if self._hls_has_unsupported_key(child.text):
+                log_event("hls_source_skipped", id=item["id"], reason="unsupported-key-scheme")
+                return None
+            return str(child.url)
+        except Exception as exc:
+            log_event("hls_probe_error", id=item["id"], error=type(exc).__name__)
+            return manifest_url
+        finally:
+            client.close()
+
+    @staticmethod
+    def _hls_has_unsupported_key(text):
+        value = (text or "").lower()
+        return "skd://" in value or "com.apple.streamingkeydelivery" in value
 
     def _mpd_tracks(
         self,
@@ -236,10 +187,16 @@ class Player:
                 response.content
             )
 
-            if root.findall(".//{*}SegmentTemplate") or root.findall(".//{*}SegmentList") or root.findall(".//{*}ContentProtection"):
+            if root.findall(".//{*}ContentProtection"):
+                log_event("mpd_source_skipped", id=item["id"], reason="content-protection")
                 return None
-            if len(root.findall("{*}Period")) != 1:
-                return None
+            if root.findall(".//{*}SegmentTemplate") or root.findall(".//{*}SegmentList") or len(root.findall("{*}Period")) != 1:
+                return {
+                    "kind": "dash",
+                    "quality": f"{preferred_height}p" if preferred_height else "auto",
+                    "video": str(response.url),
+                    "audio": None,
+                }
             parents = {child: parent for parent in root.iter() for child in parent}
             video_tracks = []
             audio_tracks = []
@@ -383,7 +340,12 @@ class Player:
                         )
 
             if not video_tracks:
-                return None
+                return {
+                    "kind": "dash",
+                    "quality": f"{preferred_height}p" if preferred_height else "auto",
+                    "video": str(response.url),
+                    "audio": None,
+                }
 
             if preferred_height:
                 exact = [
