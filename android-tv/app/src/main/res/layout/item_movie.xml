@@ -6,6 +6,7 @@
     android:orientation="vertical"
     android:padding="5dp"
     android:background="@drawable/card_bg"
+    android:foreground="@drawable/card_focus"
     android:focusable="true"
     android:clickable="true"
     android:descendantFocusability="blocksDescendants">

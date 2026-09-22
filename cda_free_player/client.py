@@ -868,8 +868,11 @@ def parse_comments(page_html, limit=60):
         if text_node is None:
             continue
         clone = BeautifulSoup(str(text_node), "html.parser")
-        for bad in clone.select(".ansComment, script, style, .reply, button"):
+        for bad in clone.select("script, style"):
             bad.decompose()
+        for reply in clone.select("a, button, [role=button], .ansComment, .reply, .reply-link, .replyComment, .comment-reply"):
+            if reply.get_text(" ", strip=True).casefold() == "odpowiedz":
+                reply.decompose()
         text = clean_description(str(clone))
         if not text:
             continue

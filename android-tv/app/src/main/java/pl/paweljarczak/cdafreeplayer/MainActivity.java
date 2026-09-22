@@ -2,13 +2,17 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.Manifest;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.speech.RecognizerIntent;
+import android.speech.RecognitionListener;
+import android.speech.SpeechRecognizer;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -38,6 +42,7 @@ public final class MainActivity extends Activity {
     private static final int INITIAL_TARGET = 12;
     private static final int INITIAL_MAX_PAGES = 4;
     private static final int VOICE_SEARCH_REQUEST = 7301;
+    private static final int RECORD_AUDIO_REQUEST = 7302;
 
     private final Handler h = new Handler(Looper.getMainLooper());
     private CdaRepository repo;
@@ -45,15 +50,16 @@ public final class MainActivity extends Activity {
     private MovieAdapter adapter;
     private GridLayoutManager gridLayout;
     private LinearLayout navPanel, detailPanel, yearRow;
+    private View yearFilterBar;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
-    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailDescriptionPreview;
+    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailDescriptionPreview, voiceStatus;
     private ImageView detailThumb;
     private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
-    private Button recent, favorites, manualSearch, settingsButton, removeCollection;
+    private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection;
     private EditText manualQuery;
     private View loadingBar;
-    private FrameLayout securityOverlay;
+    private FrameLayout securityOverlay, voiceOverlay;
     private String sort = "best", duration = "all", query = "lektor 1985";
     private Integer selectedYear = 1985;
     private int initialPages = 0, lastCard = 0;
@@ -63,6 +69,11 @@ public final class MainActivity extends Activity {
     private boolean removeMode = false;
     private String collectionMode = null;
     private UpdateManager updater;
+    private SpeechRecognizer speechRecognizer;
+    private boolean voiceListening;
+    private final ArrayList<Movie> browseItems = new ArrayList<>();
+    private String browseTitle = "Lektor 1985";
+    private int browseLastCard;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -86,7 +97,7 @@ public final class MainActivity extends Activity {
 
     private void bind() {
         navPanel = findViewById(R.id.navPanel); detailPanel = findViewById(R.id.detailPanel);
-        yearRow = findViewById(R.id.yearRow); filterButton = findViewById(R.id.filterButton);
+        yearRow = findViewById(R.id.yearRow); yearFilterBar = findViewById(R.id.yearFilterBar); filterButton = findViewById(R.id.filterButton);
         yearScroll = findViewById(R.id.yearScroll); grid = findViewById(R.id.grid); status = findViewById(R.id.status);
         resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
         loadingBar = findViewById(R.id.loadingBar); loadingText = findViewById(R.id.loadingText);
@@ -94,10 +105,10 @@ public final class MainActivity extends Activity {
         detailTime = findViewById(R.id.detailTime);
         detailFavorite = findViewById(R.id.detailFavorite); detailDescription = findViewById(R.id.detailDescription);
         detailComments = findViewById(R.id.detailComments); detailDescriptionPreview = findViewById(R.id.detailDescriptionPreview);
-        recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
+        browse = findViewById(R.id.browse); recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
         manualQuery = findViewById(R.id.manualQuery); manualSearch = findViewById(R.id.manualSearch); voiceSearch = findViewById(R.id.voiceSearch);
         settingsButton = findViewById(R.id.settingsButton); removeCollection = findViewById(R.id.removeCollection);
-        securityOverlay = findViewById(R.id.securityOverlay);
+        securityOverlay = findViewById(R.id.securityOverlay); voiceOverlay = findViewById(R.id.voiceOverlay); voiceStatus = findViewById(R.id.voiceStatus);
     }
 
     private void setupGrid() {
@@ -115,12 +126,15 @@ public final class MainActivity extends Activity {
             @Override public void onLeftEdge(Movie m, int p) { lastCard = p; showMovie(m); focusDetailActions(); }
             @Override public void onTopRow(Movie m, int p) {
                 lastCard = p;
-                if (removeCollection.getVisibility() == View.VISIBLE) removeCollection.requestFocus();
+                if (collectionMode != null) removeCollection.requestFocus();
                 else filterButton.requestFocus();
             }
             @Override public void onLastRow(int p) { repo.loadNext(); }
         });
         adapter.setColumns(cols);
+        gridLayout.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
+            @Override public int getSpanSize(int position) { return adapter.isHeader(position) ? cols : 1; }
+        });
         grid.setAdapter(adapter);
         grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override public void onScrolled(RecyclerView view, int dx, int dy) {
@@ -267,15 +281,17 @@ public final class MainActivity extends Activity {
     }
 
     private void focusFirstCard() {
-        if (adapter.getItemCount() <= 0) return;
-        grid.scrollToPosition(0);
+        int pos = adapter.firstMoviePosition();
+        if (pos == RecyclerView.NO_POSITION) return;
+        grid.scrollToPosition(pos);
         grid.post(() -> {
-            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(0);
+            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
             if (vh != null) vh.itemView.requestFocus();
         });
     }
 
     private void setupLeft() {
+        browse.setOnClickListener(v -> showBrowse());
         recent.setOnClickListener(v -> showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"));
         favorites.setOnClickListener(v -> showCollection(repo.db().favorites(), "Ulubione", "favorites"));
         manualSearch.setOnClickListener(v -> manualSearch());
@@ -293,10 +309,12 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
-        for (View v : new View[]{recent, favorites, settingsButton}) {
+        for (View v : new View[]{browse, recent, favorites, settingsButton}) {
             v.setOnKeyListener((x, key, event) -> {
                 if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                    focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true;
+                    if (collectionMode != null) removeCollection.requestFocus();
+                    else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                    return true;
                 }
                 return false;
             });
@@ -304,7 +322,7 @@ public final class MainActivity extends Activity {
         manualSearch.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) { voiceSearch.requestFocus(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { if (collectionMode != null) removeCollection.requestFocus(); else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
             return false;
         });
         voiceSearch.setOnKeyListener((v, key, event) -> {
@@ -312,12 +330,12 @@ public final class MainActivity extends Activity {
             if (key == KeyEvent.KEYCODE_DPAD_UP) { manualSearch.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) { settingsButton.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT) { manualSearch.requestFocus(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { if (collectionMode != null) removeCollection.requestFocus(); else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
             return false;
         });
         removeCollection.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_UP) { filterButton.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { focusSectionButton(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) { focusFirstCard(); return true; }
             return key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT;
         });
@@ -350,15 +368,121 @@ public final class MainActivity extends Activity {
     }
 
     private void startVoiceSearch() {
+        if (voiceListening) return;
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_AUDIO_REQUEST);
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            startVoiceActivityFallback();
+            return;
+        }
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(Bundle params) { showVoiceOverlay("Mów…"); }
+                @Override public void onBeginningOfSpeech() { showVoiceOverlay("Słucham…"); }
+                @Override public void onRmsChanged(float rmsdB) {}
+                @Override public void onBufferReceived(byte[] buffer) {}
+                @Override public void onEndOfSpeech() { if (voiceListening) showVoiceOverlay("Rozpoznawanie…"); }
+                @Override public void onError(int error) {
+                    stopVoiceUi();
+                    if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) recreateSpeechRecognizer();
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        Toast.makeText(MainActivity.this, "Brak dostępu do mikrofonu", Toast.LENGTH_LONG).show();
+                    } else if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        Toast.makeText(MainActivity.this, "Nie rozpoznano mowy", Toast.LENGTH_SHORT).show();
+                    } else {
+                        startVoiceActivityFallback();
+                    }
+                }
+                @Override public void onResults(Bundle results) {
+                    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    stopVoiceUi();
+                    applyVoiceResults(matches);
+                }
+                @Override public void onPartialResults(Bundle partialResults) {
+                    ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (matches != null && !matches.isEmpty() && matches.get(0) != null && !matches.get(0).trim().isEmpty())
+                        showVoiceOverlay(matches.get(0).trim());
+                }
+                @Override public void onEvent(int eventType, Bundle params) {}
+            });
+        }
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Powiedz czego szukasz");
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        try {
+            voiceListening = true;
+            showVoiceOverlay("Mów…");
+            speechRecognizer.startListening(intent);
+        } catch (RuntimeException e) {
+            stopVoiceUi();
+            recreateSpeechRecognizer();
+            startVoiceActivityFallback();
+        }
+    }
+
+    private void showVoiceOverlay(String text) {
+        voiceStatus.setText(text);
+        voiceOverlay.setVisibility(View.VISIBLE);
+        voiceOverlay.requestFocus();
+    }
+
+    private void stopVoiceUi() {
+        voiceListening = false;
+        voiceOverlay.setVisibility(View.GONE);
+    }
+
+    private void cancelVoiceSearch() {
+        if (speechRecognizer != null && voiceListening) speechRecognizer.cancel();
+        stopVoiceUi();
+        voiceSearch.requestFocus();
+    }
+
+    private void recreateSpeechRecognizer() {
+        if (speechRecognizer != null) {
+            speechRecognizer.destroy();
+            speechRecognizer = null;
+        }
+    }
+
+    private void startVoiceActivityFallback() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
         try {
             startActivityForResult(intent, VOICE_SEARCH_REQUEST);
         } catch (ActivityNotFoundException e) {
             Toast.makeText(this, "Brak systemowej usługi rozpoznawania mowy", Toast.LENGTH_LONG).show();
+            voiceSearch.requestFocus();
         }
+    }
+
+    private void applyVoiceResults(ArrayList<String> results) {
+        if (results == null) return;
+        for (String value : results) {
+            String spoken = value == null ? "" : value.trim();
+            if (spoken.isEmpty()) continue;
+            manualQuery.setText(spoken);
+            manualQuery.setSelection(spoken.length());
+            selectedYear = null;
+            startSearch(spoken, "Wyniki: " + spoken);
+            return;
+        }
+        voiceSearch.requestFocus();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != RECORD_AUDIO_REQUEST) return;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) startVoiceSearch();
+        else Toast.makeText(this, "Wyszukiwanie głosowe wymaga dostępu do mikrofonu", Toast.LENGTH_LONG).show();
     }
 
     @SuppressWarnings("deprecation")
@@ -366,14 +490,7 @@ public final class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != VOICE_SEARCH_REQUEST || resultCode != RESULT_OK || data == null) return;
-        ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-        if (results == null || results.isEmpty()) return;
-        String spoken = results.get(0) == null ? "" : results.get(0).trim();
-        if (spoken.isEmpty()) return;
-        manualQuery.setText(spoken);
-        manualQuery.setSelection(spoken.length());
-        selectedYear = null;
-        startSearch(spoken, "Wyniki: " + spoken);
+        applyVoiceResults(data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS));
     }
 
     private void manualSearch() {
@@ -384,7 +501,9 @@ public final class MainActivity extends Activity {
     }
 
     private void startSearch(String q, String title) {
-        collectionMode = null; removeMode = false; adapter.setRemoveMode(false); removeCollection.setVisibility(View.GONE);
+        collectionMode = null; removeMode = false; adapter.setRemoveMode(false); adapter.setSectioned(false); removeCollection.setVisibility(View.GONE);
+        yearFilterBar.setVisibility(View.VISIBLE);
+        browseTitle = title; browseItems.clear(); browseLastCard = 0;
         repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
         query = q; initialPages = 0; adapter.setItems(Collections.emptyList());
         resultsTitle.setText(title); resultCount.setText(""); showNav();
@@ -394,33 +513,58 @@ public final class MainActivity extends Activity {
                 setStatus("Wczytywanie strony " + page + "…");
             }
             @Override public void onPage(ArrayList<Movie> movies, int page, SearchPage stats) {
-                int previousCount = adapter.getItemCount();
+                int previousCount = adapter.getMovieCount();
                 loadingBar.setVisibility(View.GONE); initialPages++; adapter.append(movies);
-                resultCount.setText(adapter.getItemCount() + " filmów");
+                browseItems.clear(); browseItems.addAll(adapter.items());
+                resultCount.setText(adapter.getMovieCount() + " filmów");
                 setStatus("p" + page + ": +" + movies.size() + " • Premium pominięte: " + stats.premium);
-                if (adapter.getItemCount() == previousCount || adapter.getItemCount() < INITIAL_TARGET && initialPages < INITIAL_MAX_PAGES) h.postDelayed(repo::loadNext, 100);
+                if (adapter.getMovieCount() == previousCount || adapter.getMovieCount() < INITIAL_TARGET && initialPages < INITIAL_MAX_PAGES) h.postDelayed(repo::loadNext, 100);
             }
-            @Override public void onFinished(String why) { loadingBar.setVisibility(View.GONE); setStatus(why + " • " + adapter.getItemCount() + " filmów"); }
+            @Override public void onFinished(String why) { loadingBar.setVisibility(View.GONE); setStatus(why + " • " + adapter.getMovieCount() + " filmów"); }
             @Override public void onError(String e) { loadingBar.setVisibility(View.GONE); setStatus("Błąd: " + e); }
             @Override public void onVerification(boolean interactive) { setStatus(interactive ? "Weryfikacja zabezpieczeń CDA" : "Weryfikacja w tle…"); }
         });
     }
 
     private void showCollection(ArrayList<Movie> list, String title, String mode) {
+        if (collectionMode == null) {
+            browseItems.clear(); browseItems.addAll(adapter.items()); browseTitle = resultsTitle.getText().toString(); browseLastCard = lastCard;
+        }
         repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
         repo.cancelSearch();
         loadingBar.setVisibility(View.GONE);
         collectionMode = mode;
         removeMode = false;
         adapter.setRemoveMode(false);
+        adapter.setSectioned(true);
+        yearFilterBar.setVisibility(View.GONE);
         removeCollection.setVisibility(View.VISIBLE);
         removeCollection.setText("recent".equals(mode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
-        adapter.setItems(list); resultsTitle.setText(title); resultCount.setText(list.size() + " filmów"); showNav();
-        if (!list.isEmpty()) grid.post(() -> {
-            grid.scrollToPosition(0);
-            grid.post(() -> { RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(0); if (vh != null) vh.itemView.requestFocus(); });
-        });
+        adapter.setItems(list); resultsTitle.setText(title); resultCount.setText(adapter.getMovieCount() + " filmów"); showNav();
+        lastCard = adapter.firstMoviePosition();
+        if (!list.isEmpty()) grid.post(this::focusFirstCard);
     }
+
+    private void showBrowse() {
+        repo.cancelSearch();
+        collectionMode = null; removeMode = false; adapter.setRemoveMode(false); adapter.setSectioned(false);
+        removeCollection.setVisibility(View.GONE); yearFilterBar.setVisibility(View.VISIBLE);
+        if (browseItems.isEmpty()) {
+            startSearch(query, browseTitle);
+            return;
+        }
+        adapter.setItems(browseItems); resultsTitle.setText(browseTitle); resultCount.setText(adapter.getMovieCount() + " filmów");
+        lastCard = Math.max(0, Math.min(browseLastCard, adapter.getItemCount() - 1));
+        showNav();
+    }
+
+    private Button sectionButton() {
+        if ("recent".equals(collectionMode)) return recent;
+        if ("favorites".equals(collectionMode)) return favorites;
+        return browse;
+    }
+
+    private void focusSectionButton() { showNav(); sectionButton().requestFocus(); }
 
     private void toggleRemoveMode() {
         if (collectionMode == null) return;
@@ -617,10 +761,10 @@ public final class MainActivity extends Activity {
                 repo.db().decorateLocalState(adapter.items());
                 adapter.notifyLocalStatesChanged();
             }
-            resultCount.setText(adapter.getItemCount() + " filmów");
+            resultCount.setText(adapter.getMovieCount() + " filmów");
             lastCard = Math.max(0, Math.min(lastCard, adapter.getItemCount() - 1));
-            if (lastCard >= 0 && lastCard < adapter.items().size()) {
-                focused = adapter.items().get(lastCard);
+            focused = adapter.movieAtAdapterPosition(lastCard);
+            if (focused != null) {
                 showMovie(focused);
                 restoreCard();
             }
@@ -630,32 +774,37 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (voiceListening || voiceOverlay.getVisibility() == View.VISIBLE) { cancelVoiceSearch(); return; }
         if (playerPreparing) {
-            repo.cancelPlayer(); playerPreparing = false;
-            setStatus("Przygotowanie filmu przerwane");
-            return;
-        }
-        if (repo.isSearchLoading()) {
-            repo.cancelSearch();
-            loadingBar.setVisibility(View.GONE);
-            setStatus("Wyszukiwanie przerwane");
-            return;
+            repo.cancelPlayer(); playerPreparing = false; setStatus("Przygotowanie filmu przerwane"); return;
         }
         if (removeMode) {
-            removeMode = false;
-            adapter.setRemoveMode(false);
-            if (collectionMode != null) {
-                removeCollection.setText("recent".equals(collectionMode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
-            }
+            removeMode = false; adapter.setRemoveMode(false);
+            if (collectionMode != null) removeCollection.setText("recent".equals(collectionMode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
             return;
         }
         if (repo.gateway().webSession().isInteractive()) {
-            repo.cancelSearch(); setStatus("Weryfikacja przerwana"); return;
+            repo.gateway().webSession().cancelCurrent(); setStatus("Weryfikacja przerwana"); return;
         }
         View f = getCurrentFocus();
-        if (f != null && isDescendant(grid, f)) { focusDetailActions(); return; }
-        if (f != null && isDescendant(detailPanel, f)) { showNav(); recent.requestFocus(); return; }
-        super.onBackPressed();
+        if (f != null && isDescendant(detailPanel, f)) { focusSectionButton(); return; }
+        if (f != null && (isDescendant(grid, f) || isDescendant(yearFilterBar, f) || f == removeCollection)) { focusSectionButton(); return; }
+        if (f != null && isDescendant(navPanel, f)) {
+            if (collectionMode != null) { showBrowse(); browse.requestFocus(); return; }
+            showExitConfirmation();
+            return;
+        }
+        focusSectionButton();
+    }
+
+    private void showExitConfirmation() {
+        TvDialogs.confirm(this, "Zamknąć aplikację?", "Czy na pewno chcesz zamknąć CDA Free Player?", this::exitCompletely, null);
+    }
+
+    private void exitCompletely() {
+        if (repo != null) { repo.cancelSearch(); repo.cancelPlayer(); }
+        finishAffinity();
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     private static boolean isDescendant(View parent, View child) {
@@ -670,6 +819,8 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onStop() {
+        if (voiceListening && speechRecognizer != null) speechRecognizer.cancel();
+        stopVoiceUi();
         if (playerPreparing && !launchedPlayer) {
             repo.cancelPlayer();
             playerPreparing = false;
@@ -681,6 +832,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
+        if (speechRecognizer != null) { speechRecognizer.destroy(); speechRecognizer = null; }
         if (repo != null) repo.shutdown();
         if (images != null) images.shutdown();
         if (updater != null) updater.shutdown();

@@ -13,10 +13,13 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 
-public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder> {
+public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+    private static final int TYPE_MOVIE = 0;
+    private static final int TYPE_HEADER = 1;
     private static final String PAYLOAD_LOCAL = "local";
 
     public interface Listener {
@@ -28,11 +31,14 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     }
 
     private final HashSet<String> ids = new HashSet<>();
-    private final ArrayList<Movie> items = new ArrayList<>();
+    private final ArrayList<Movie> movies = new ArrayList<>();
+    private final ArrayList<Object> rows = new ArrayList<>();
+    private final HashMap<String, Integer> rowById = new HashMap<>();
     private final ImageLoader images;
     private final Listener listener;
     private int columns = 4;
-    private boolean removeMode = false;
+    private boolean removeMode;
+    private boolean sectioned;
 
     public MovieAdapter(ImageLoader images, Listener listener) {
         this.images = images;
@@ -43,50 +49,101 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     public void setColumns(int n) { columns = Math.max(1, n); }
     public void setRemoveMode(boolean enabled) { removeMode = enabled; notifyDataSetChanged(); }
     public boolean isRemoveMode() { return removeMode; }
-    public ArrayList<Movie> items() { return items; }
+    public ArrayList<Movie> items() { return movies; }
+    public int getMovieCount() { return movies.size(); }
+    public boolean isHeader(int position) { return position >= 0 && position < rows.size() && rows.get(position) instanceof String; }
+    public int firstMoviePosition() {
+        for (int i = 0; i < rows.size(); i++) if (rows.get(i) instanceof Movie) return i;
+        return RecyclerView.NO_POSITION;
+    }
+    public Movie movieAtAdapterPosition(int position) {
+        if (position < 0 || position >= rows.size() || !(rows.get(position) instanceof Movie)) return null;
+        return (Movie) rows.get(position);
+    }
 
-    public void setItems(Collection<Movie> movies) {
-        items.clear();
-        ids.clear();
-        for (Movie movie : movies) if (ids.add(movie.id)) items.add(movie);
+    public void setSectioned(boolean enabled) {
+        if (sectioned == enabled) return;
+        sectioned = enabled;
+        rebuildRows();
         notifyDataSetChanged();
     }
 
-    public void append(Collection<Movie> movies) {
-        int start = items.size();
-        for (Movie movie : movies) if (ids.add(movie.id)) items.add(movie);
-        if (items.size() > start) notifyItemRangeInserted(start, items.size() - start);
+    public void setItems(Collection<Movie> source) {
+        movies.clear();
+        ids.clear();
+        if (source != null) for (Movie movie : source) if (movie != null && ids.add(movie.id)) movies.add(movie);
+        rebuildRows();
+        notifyDataSetChanged();
+    }
+
+    public void append(Collection<Movie> source) {
+        if (source == null || source.isEmpty()) return;
+        int oldRows = rows.size();
+        boolean changed = false;
+        for (Movie movie : source) if (movie != null && ids.add(movie.id)) {
+            movies.add(movie);
+            changed = true;
+        }
+        if (!changed) return;
+        rebuildRows();
+        if (!sectioned && rows.size() >= oldRows) notifyItemRangeInserted(oldRows, rows.size() - oldRows);
+        else notifyDataSetChanged();
     }
 
     public void updateLocalState(Movie changed) {
-        for (int i = 0; i < items.size(); i++) {
-            Movie m = items.get(i);
-            if (m.id.equals(changed.id)) {
-                m.favorite = changed.favorite;
-                m.positionMs = changed.positionMs;
-                m.mediaDurationMs = changed.mediaDurationMs;
-                notifyItemChanged(i, PAYLOAD_LOCAL);
-                return;
-            }
+        if (changed == null) return;
+        for (Movie m : movies) if (m.id.equals(changed.id)) {
+            m.favorite = changed.favorite;
+            m.positionMs = changed.positionMs;
+            m.mediaDurationMs = changed.mediaDurationMs;
+            Integer row = rowById.get(m.id);
+            if (row != null) notifyItemChanged(row, PAYLOAD_LOCAL);
+            return;
         }
     }
 
     public void notifyLocalStatesChanged() {
-        if (!items.isEmpty()) notifyItemRangeChanged(0, items.size(), PAYLOAD_LOCAL);
+        if (!rows.isEmpty()) notifyItemRangeChanged(0, rows.size(), PAYLOAD_LOCAL);
     }
 
-    @Override public long getItemId(int p) { return items.get(p).id.hashCode(); }
+    private void rebuildRows() {
+        rows.clear();
+        rowById.clear();
+        String lastHeader = null;
+        for (Movie m : movies) {
+            if (sectioned) {
+                String header = m.sectionLabel == null ? "" : m.sectionLabel.trim();
+                if (!header.isEmpty() && !header.equals(lastHeader)) {
+                    rows.add(header);
+                    lastHeader = header;
+                }
+            }
+            rowById.put(m.id, rows.size());
+            rows.add(m);
+        }
+    }
+
+    @Override public int getItemViewType(int position) { return isHeader(position) ? TYPE_HEADER : TYPE_MOVIE; }
 
     @NonNull
     @Override
-    public Holder onCreateViewHolder(@NonNull ViewGroup p, int t) {
-        View v = LayoutInflater.from(p.getContext()).inflate(R.layout.item_movie, p, false);
+    public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int type) {
+        if (type == TYPE_HEADER) {
+            View v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_section_header, parent, false);
+            return new HeaderHolder(v);
+        }
+        View v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_movie, parent, false);
         return new Holder(v);
     }
 
     @Override
-    public void onBindViewHolder(@NonNull Holder h, int pos) {
-        Movie m = items.get(pos);
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position) {
+        if (holder instanceof HeaderHolder) {
+            ((HeaderHolder) holder).title.setText((String) rows.get(position));
+            return;
+        }
+        Holder h = (Holder) holder;
+        Movie m = (Movie) rows.get(position);
         h.root.setBackgroundResource(removeMode ? R.drawable.card_bg_remove : R.drawable.card_bg);
         m.title = MovieTitle.clean(m.title, m.duration);
         h.title.setText(m.title);
@@ -97,20 +154,18 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     }
 
     @Override
-    public void onBindViewHolder(@NonNull Holder h, int pos, @NonNull List<Object> payloads) {
-        if (payloads.isEmpty()) {
-            onBindViewHolder(h, pos);
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder holder, int position, @NonNull List<Object> payloads) {
+        if (!(holder instanceof Holder) || payloads.isEmpty()) {
+            onBindViewHolder(holder, position);
             return;
         }
-        Movie m = items.get(pos);
+        Movie m = (Movie) rows.get(position);
         boolean handled = false;
-        for (Object payload : payloads) {
-            if (PAYLOAD_LOCAL.equals(payload)) {
-                bindLocal(h, m);
-                handled = true;
-            }
+        for (Object payload : payloads) if (PAYLOAD_LOCAL.equals(payload)) {
+            bindLocal((Holder) holder, m);
+            handled = true;
         }
-        if (!handled) onBindViewHolder(h, pos);
+        if (!handled) onBindViewHolder(holder, position);
     }
 
     private static void bindLocal(Holder h, Movie m) {
@@ -127,13 +182,13 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     private void bindListeners(Holder h, Movie m) {
         h.root.setOnFocusChangeListener((v, focused) -> {
             v.animate().cancel();
+            v.setTranslationZ(focused ? 18f * v.getResources().getDisplayMetrics().density : 0f);
             v.animate().scaleX(focused ? 1.035f : 1f).scaleY(focused ? 1.035f : 1f).setDuration(75).start();
             if (!focused) return;
             int p = h.getBindingAdapterPosition();
             if (p == RecyclerView.NO_POSITION) return;
             listener.onFocus(m, p, v);
-            int lastRow = (getItemCount() - 1) / columns;
-            if (p / columns >= lastRow) listener.onLastRow(p);
+            if (!sectioned && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
         });
         h.root.setOnClickListener(v -> {
             int p = h.getBindingAdapterPosition();
@@ -147,12 +202,13 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
                 return true;
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_UP && p / columns == 0) {
+            int sectionIndex = movieIndexInSection(p);
+            if (key == KeyEvent.KEYCODE_DPAD_UP && movieOrdinal(p) < columns) {
                 listener.onTopRow(m, p);
                 return true;
             }
-            if (key == KeyEvent.KEYCODE_DPAD_DOWN && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
-            if (key == KeyEvent.KEYCODE_DPAD_LEFT && p % columns == 0) {
+            if (!sectioned && key == KeyEvent.KEYCODE_DPAD_DOWN && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT && sectionIndex % columns == 0) {
                 listener.onLeftEdge(m, p);
                 return true;
             }
@@ -160,7 +216,30 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         });
     }
 
-    @Override public int getItemCount() { return items.size(); }
+    private int movieIndexInSection(int position) {
+        int n = 0;
+        for (int i = position - 1; i >= 0; i--) {
+            if (rows.get(i) instanceof String) break;
+            n++;
+        }
+        return n;
+    }
+
+    private int movieOrdinal(int position) {
+        int n = 0;
+        for (int i = 0; i < position; i++) if (rows.get(i) instanceof Movie) n++;
+        return n;
+    }
+
+    @Override public int getItemCount() { return rows.size(); }
+
+    static final class HeaderHolder extends RecyclerView.ViewHolder {
+        final TextView title;
+        HeaderHolder(View v) {
+            super(v);
+            title = v.findViewById(R.id.sectionTitle);
+        }
+    }
 
     static final class Holder extends RecyclerView.ViewHolder {
         final View root;

@@ -13,9 +13,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
 
 public final class CdaDb extends SQLiteOpenHelper {
-    private static final int VER = 2;
+    private static final int VER = 3;
     private static final long CACHE_MS = 6L * 60 * 60 * 1000;
 
     public CdaDb(Context c) {
@@ -35,9 +39,8 @@ public final class CdaDb extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        if (oldVersion < 2) {
-            db.delete("search_cache", null, null);
-        }
+        if (oldVersion < 2) db.delete("search_cache", null, null);
+        if (oldVersion < 3) db.delete("comments", null, null);
     }
 
     public synchronized void removeHistory(String id) {
@@ -113,19 +116,19 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     public synchronized ArrayList<Movie> favorites() {
-        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,0,0 FROM favorites ORDER BY added DESC");
+        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,0,0,added FROM favorites ORDER BY added DESC", true);
         decorateLocalState(out);
         for (Movie m : out) m.favorite = true;
         return out;
     }
 
     public synchronized ArrayList<Movie> recent() {
-        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,position,media_duration FROM history ORDER BY last DESC LIMIT 100");
+        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,position,media_duration,last FROM history ORDER BY last DESC LIMIT 100", true);
         decorateLocalState(out);
         return out;
     }
 
-    private ArrayList<Movie> readMovies(String sql) {
+    private ArrayList<Movie> readMovies(String sql, boolean sectionByDay) {
         ArrayList<Movie> out = new ArrayList<>();
         try (Cursor c = getReadableDatabase().rawQuery(sql, null)) {
             while (c.moveToNext()) {
@@ -138,6 +141,7 @@ public final class CdaDb extends SQLiteOpenHelper {
                 m.imageUrl = c.getString(4);
                 m.positionMs = c.getLong(5);
                 m.mediaDurationMs = c.getLong(6);
+                if (sectionByDay && c.getColumnCount() > 7) m.sectionLabel = dayLabel(c.getLong(7));
                 out.add(m);
             }
         }
@@ -188,6 +192,24 @@ public final class CdaDb extends SQLiteOpenHelper {
                 if (m != null && m.rating == null) m.rating = c.getDouble(1);
             }
         }
+    }
+
+    private static String dayLabel(long time) {
+        if (time <= 0) return "";
+        Calendar now = Calendar.getInstance();
+        Calendar day = Calendar.getInstance();
+        day.setTimeInMillis(time);
+        if (sameDay(now, day)) return "Dzisiaj";
+        now.add(Calendar.DAY_OF_YEAR, -1);
+        if (sameDay(now, day)) return "Wczoraj";
+        String label = new SimpleDateFormat("d MMMM yyyy", new Locale("pl", "PL")).format(new Date(time));
+        return label.isEmpty() ? "" : Character.toUpperCase(label.charAt(0)) + label.substring(1);
+    }
+
+    private static boolean sameDay(Calendar a, Calendar b) {
+        return a.get(Calendar.ERA) == b.get(Calendar.ERA) &&
+                a.get(Calendar.YEAR) == b.get(Calendar.YEAR) &&
+                a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR);
     }
 
     private static String placeholders(int n) {

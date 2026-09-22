@@ -33,9 +33,18 @@
                     android:textStyle="bold"/>
 
                 <Button
+                    android:id="@+id/browse"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:background="@drawable/button_bg"
+                    android:text="Przeglądaj"
+                    android:textColor="@color/text"/>
+
+                <Button
                     android:id="@+id/recent"
                     android:layout_width="match_parent"
                     android:layout_height="48dp"
+                    android:layout_marginTop="5dp"
                     android:background="@drawable/button_bg"
                     android:text="Ostatnio oglądane"
                     android:textColor="@color/text"/>
@@ -215,6 +224,7 @@
             android:padding="10dp">
 
             <LinearLayout
+                android:id="@+id/yearFilterBar"
                 android:layout_width="match_parent"
                 android:layout_height="54dp"
                 android:gravity="center_vertical"
@@ -310,6 +320,41 @@
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>
+
+    <FrameLayout
+        android:id="@+id/voiceOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#B8000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="#E0181C22"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="28dp">
+
+            <ImageView
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:src="@drawable/ic_mic"/>
+
+            <TextView
+                android:id="@+id/voiceStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="Mów…"
+                android:textColor="@color/text"
+                android:textSize="20sp"
+                android:textStyle="bold"/>
+        </LinearLayout>
+    </FrameLayout>
 
     <FrameLayout
         android:id="@+id/securityOverlay"

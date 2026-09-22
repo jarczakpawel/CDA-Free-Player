@@ -3,7 +3,7 @@ package pl.paweljarczak.cdafreeplayer;
 import org.json.JSONObject;
 
 public final class Movie {
-    public String id = "", title = "", url = "", duration = "", imageUrl = "", shortDescription = "";
+    public String id = "", title = "", url = "", duration = "", imageUrl = "", shortDescription = "", sectionLabel = "";
     public Double rating = null;
     public long positionMs = 0, mediaDurationMs = 0;
     public boolean favorite = false;
