@@ -244,10 +244,7 @@ public final class PlayerActivity extends Activity {
         updateCommentsDescription(metadata.commentCount);
         comments.setOnClickListener(v -> loadComments());
         quality.setOnClickListener(v -> showQuality());
-        if (metadata.rating != null) {
-            ratingTop.setVisibility(View.VISIBLE); stars.setRating(metadata.rating);
-            ratingExact.setText(String.format(Locale.US, "%.1f / 5", metadata.rating));
-        }
+        updateRatingDisplay();
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar b, int p, boolean user) { if (user && scrubbing) updateTimeLabels(p * 1000L, player.getDuration()); }
             @Override public void onStartTrackingTouch(SeekBar b) { scrubbing = true; h.removeCallbacks(hideOsd); }
@@ -306,8 +303,21 @@ public final class PlayerActivity extends Activity {
         comments.setContentDescription(count == null ? "Komentarze" : "Komentarze: " + count);
     }
 
-    private void showOsd() { osdVisible = true; osd.setVisibility(View.VISIBLE); seek.requestFocus(); resetHide(); }
-    private void hideOsd() { osdVisible = false; osd.setVisibility(View.GONE); playerView.requestFocus(); }
+    private void updateRatingDisplay() {
+        if (metadata.rating == null) {
+            stars.setRating(null);
+            ratingTop.setVisibility(View.GONE);
+            return;
+        }
+        stars.setRating(metadata.rating);
+        String text = String.format(Locale.US, "%.1f / 5", metadata.rating);
+        if (metadata.cdaVotes != null && metadata.cdaVotes > 0) text += " • " + metadata.cdaVotes + " ocen";
+        ratingExact.setText(text);
+        ratingTop.setVisibility(osdVisible ? View.VISIBLE : View.GONE);
+    }
+
+    private void showOsd() { osdVisible = true; osd.setVisibility(View.VISIBLE); updateRatingDisplay(); seek.requestFocus(); resetHide(); }
+    private void hideOsd() { osdVisible = false; osd.setVisibility(View.GONE); ratingTop.setVisibility(View.GONE); playerView.requestFocus(); }
     private void resetHide() { h.removeCallbacks(hideOsd); h.postDelayed(hideOsd, 7000); }
     private long stepForRepeat(int r) { return r < 3 ? 10_000L : r < 7 ? 30_000L : 60_000L; }
 
@@ -388,11 +398,7 @@ public final class PlayerActivity extends Activity {
         if (md.imdbRating != null && !md.imdbRating.isEmpty()) metadata.imdbRating = md.imdbRating;
         if (md.imdbVotes != null) metadata.imdbVotes = md.imdbVotes;
         if (md.commentCount != null) metadata.commentCount = md.commentCount;
-        if (metadata.rating != null) {
-            ratingTop.setVisibility(View.VISIBLE);
-            stars.setRating(metadata.rating);
-            ratingExact.setText(String.format(Locale.US, "%.1f / 5", metadata.rating));
-        }
+        updateRatingDisplay();
         updateCommentsDescription(metadata.commentCount);
     }
 

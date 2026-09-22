@@ -127,7 +127,7 @@ public final class MainActivity extends Activity {
                 lastCard = p;
                 if (removeMode) removeFromCollection(m); else play(m);
             }
-            @Override public void onLeftEdge(Movie m, int p) { lastCard = p; showMovie(m); focusDetailActions(); }
+            @Override public void onLeftEdge(Movie m, int p) { lastCard = p; focusSectionButton(); }
             @Override public void onTopRow(Movie m, int p) {
                 lastCard = p;
                 if (collectionMode != null) removeCollection.requestFocus();
@@ -710,7 +710,13 @@ public final class MainActivity extends Activity {
                 i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
                 i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);
-                if (m.rating != null) i.putExtra("rating", m.rating);
+                Double playerRating = md.rating != null ? md.rating : m.rating;
+                Integer playerVotes = md.cdaVotes != null ? md.cdaVotes : m.ratingVotes;
+                if (playerRating != null) i.putExtra("rating", playerRating);
+                if (playerVotes != null) i.putExtra("cdaVotes", playerVotes);
+                if (md.imdbRating != null && !md.imdbRating.isEmpty()) i.putExtra("imdbRating", md.imdbRating);
+                if (md.imdbVotes != null) i.putExtra("imdbVotes", md.imdbVotes);
+                if (md.commentCount != null) i.putExtra("commentCount", md.commentCount);
                 try {
                     startActivity(i);
                     setStatus("Gotowe");
@@ -809,7 +815,8 @@ public final class MainActivity extends Activity {
         }
         View f = getCurrentFocus();
         if (f != null && isDescendant(detailPanel, f)) { focusSectionButton(); return; }
-        if (f != null && (isDescendant(grid, f) || isDescendant(yearFilterBar, f) || f == removeCollection)) { focusSectionButton(); return; }
+        if (f != null && isDescendant(grid, f)) { focusDetailActions(); return; }
+        if (f != null && (isDescendant(yearFilterBar, f) || f == removeCollection)) { focusSectionButton(); return; }
         if (f != null && isDescendant(navPanel, f)) {
             if (collectionMode != null) { showBrowse(false); browse.requestFocus(); return; }
             showExitConfirmation();

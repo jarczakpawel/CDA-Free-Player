@@ -5,6 +5,7 @@ import org.json.JSONObject;
 public final class Movie {
     public String id = "", title = "", url = "", duration = "", imageUrl = "", shortDescription = "", sectionLabel = "";
     public Double rating = null;
+    public Integer ratingVotes = null;
     public long positionMs = 0, mediaDurationMs = 0;
     public boolean favorite = false;
 
@@ -18,6 +19,7 @@ public final class Movie {
             o.put("image", imageUrl);
             o.put("short", shortDescription);
             if (rating != null) o.put("rating", rating);
+            if (ratingVotes != null) o.put("ratingVotes", ratingVotes);
             return o;
         } catch (Exception e) {
             return new JSONObject();
@@ -34,6 +36,7 @@ public final class Movie {
         m.imageUrl = o.optString("image");
         m.shortDescription = o.optString("short");
         if (o.has("rating")) m.rating = o.optDouble("rating");
+        if (o.has("ratingVotes")) m.ratingVotes = o.optInt("ratingVotes");
         return m;
     }
 }

@@ -82,6 +82,7 @@ public final class CdaParser {
         m.imageUrl = imageFromTile(tile);
         m.shortDescription = tooltip(tile);
         m.rating = ratingFromTile(tile);
+        m.ratingVotes = votesFromTile(tile);
         page.movies.add(m);
     }
 
@@ -200,7 +201,7 @@ public final class CdaParser {
 
     private static String tooltip(Element tile) {
         if (tile == null) return "";
-        for (Element e : tile.getAllElements()) for (String attr : new String[]{"data-description", "title", "onmouseover", "onmouseenter"}) if (e.hasAttr(attr)) {
+        for (Element e : tile.getAllElements()) for (String attr : new String[]{"onmouseover", "onmouseenter", "data-overlib", "data-description", "title"}) if (e.hasAttr(attr)) {
             String v = e.attr(attr);
             if (v.length() < 20) continue;
             Matcher m = Pattern.compile("(?is)overlib\\s*\\(\\s*['\"](.*?)['\"]").matcher(v);
@@ -216,7 +217,7 @@ public final class CdaParser {
         for (String sel : new String[]{"[itemprop=ratingValue]", "[data-rating]", "[data-rate]", ".rating", ".rate", ".rateMedVal", ".rating-value"}) {
             Element e = tile.selectFirst(sel);
             if (e == null) continue;
-            String v = e.hasAttr("content") ? e.attr("content") : e.hasAttr("data-rating") ? e.attr("data-rating") : e.text();
+            String v = e.hasAttr("content") ? e.attr("content") : e.hasAttr("data-rating") ? e.attr("data-rating") : e.hasAttr("data-rate") ? e.attr("data-rate") : e.text();
             Matcher m = RATING.matcher(v);
             if (m.find()) {
                 double d = parseDouble(m.group(1));
@@ -229,6 +230,20 @@ public final class CdaParser {
             double d = parseDouble(s);
             if (d >= 0 && d <= 5) return d;
         }
+        return null;
+    }
+
+    private static Integer votesFromTile(Element tile) {
+        if (tile == null) return null;
+        for (String sel : new String[]{"[itemprop=ratingCount]", "[itemprop=reviewCount]", "[data-votes]", "[data-vote-count]", "[data-rating-count]", ".rating-count", ".rateCount", ".votes"}) {
+            Element e = tile.selectFirst(sel);
+            if (e == null) continue;
+            String v = e.hasAttr("content") ? e.attr("content") : e.hasAttr("data-votes") ? e.attr("data-votes") : e.hasAttr("data-vote-count") ? e.attr("data-vote-count") : e.hasAttr("data-rating-count") ? e.attr("data-rating-count") : e.text();
+            Integer n = parseInt(v);
+            if (n != null && n >= 0) return n;
+        }
+        Matcher m = Pattern.compile("(?i)(?:ocen(?:y)?|głos(?:y|ów)?|votes?)\\s*[:(]?\\s*(\\d+(?:[ .]\\d{3})*)|(\\d+(?:[ .]\\d{3})*)\\s*(?:ocen(?:y)?|głos(?:y|ów)?|votes?)").matcher(tile.text());
+        if (m.find()) return parseInt(m.group(1) != null ? m.group(1) : m.group(2));
         return null;
     }
 

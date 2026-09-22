@@ -313,8 +313,11 @@ public final class CdaRepository {
                         return;
                     }
 
-                    MovieMetadata md = new MovieMetadata();
-                    md.description = m.shortDescription == null ? "" : m.shortDescription;
+                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
+                    if (md.description == null || md.description.isEmpty()) md.description = m.shortDescription == null ? "" : m.shortDescription;
+                    if (md.rating == null) md.rating = m.rating;
+                    if (md.cdaVotes == null) md.cdaVotes = m.ratingVotes;
+                    db.saveMetadata(m.id, md);
                     PlayerData ready = resolved;
                     cachePlayer(m.id, ready, md);
                     deliver(token, () -> { playerToken = null; listener.onPlayer(ready, md); });

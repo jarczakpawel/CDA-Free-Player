@@ -76,7 +76,7 @@ class Database:
         """)
 
         self.db.execute("""
-            CREATE TABLE IF NOT EXISTS search_pages_v12(
+            CREATE TABLE IF NOT EXISTS search_pages_v13(
                 query TEXT,
                 sort_key TEXT,
                 duration_key TEXT,
@@ -291,7 +291,7 @@ class Database:
     ):
         with self.lock:
             row = self.db.execute(
-                "SELECT items_json,fetched_at FROM search_pages_v12 "
+                "SELECT items_json,fetched_at FROM search_pages_v13 "
                 "WHERE query=? AND sort_key=? AND duration_key=? AND page=?",
                 (
                     query,
@@ -327,7 +327,7 @@ class Database:
     ):
         with self.lock:
             self.db.execute(
-                "INSERT OR REPLACE INTO search_pages_v12 VALUES(?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO search_pages_v13 VALUES(?,?,?,?,?,?)",
                 (
                     query,
                     sort_key,

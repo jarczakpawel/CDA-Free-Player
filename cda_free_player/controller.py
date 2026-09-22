@@ -157,6 +157,10 @@ class DPadController:
             return
 
         if self.zone == "detail_actions":
+            if self.index > 0:
+                self.focus("detail_actions", self.index - 1)
+            else:
+                self.focus("left", self._section_left_index())
             return
 
         if self.zone == "left":
@@ -167,21 +171,13 @@ class DPadController:
 
     def right(self):
         if self.zone == "detail_actions":
-            card_index = getattr(
-                self.root,
-                "_cda_last_card_index",
-                0,
-            )
-
-            if self.zones.get(
-                "cards",
-                {},
-            ).get("widgets"):
-                self.focus(
-                    "cards",
-                    card_index,
-                )
-
+            widgets = self.zones["detail_actions"]["widgets"]
+            if self.index + 1 < len(widgets):
+                self.focus("detail_actions", self.index + 1)
+                return
+            card_index = getattr(self.root, "_cda_last_card_index", 0)
+            if self.zones.get("cards", {}).get("widgets"):
+                self.focus("cards", card_index)
             return
 
         if self.zone == "left":
@@ -228,11 +224,6 @@ class DPadController:
 
     def up(self):
         if self.zone == "detail_actions":
-            if self.index > 0:
-                self.focus(
-                    "detail_actions",
-                    self.index - 1,
-                )
             return
 
         if self.zone == "left":
@@ -276,18 +267,6 @@ class DPadController:
 
     def down(self):
         if self.zone == "detail_actions":
-            widgets = self.zones[
-                "detail_actions"
-            ]["widgets"]
-
-            if (
-                self.index + 1
-                < len(widgets)
-            ):
-                self.focus(
-                    "detail_actions",
-                    self.index + 1,
-                )
             return
 
         if self.zone == "left":

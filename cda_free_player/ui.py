@@ -9,7 +9,7 @@ from hashlib import sha1
 from io import BytesIO
 
 import httpx
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from .client import (
     CdaClient,
@@ -134,6 +134,7 @@ class App:
         self.placeholder = ImageTk.PhotoImage(
             placeholder_image,
         )
+        self.detail_icons = self.build_detail_icons()
 
         self.build()
 
@@ -185,6 +186,40 @@ class App:
                     self.selected_year
                 ),
             )
+
+    def build_detail_icons(self):
+        def photo(kind, filled=False):
+            import math
+            image = Image.new("RGBA", (28, 28), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            color = (242, 242, 242, 255)
+            if kind == "favorite":
+                points = []
+                for i in range(81):
+                    t = 2 * math.pi * i / 80
+                    x = 14 + 10.2 * (math.sin(t) ** 3)
+                    y = 13 - 8.4 * (math.cos(t) - 0.42 * math.cos(2 * t) - 0.2 * math.cos(3 * t) - 0.08 * math.cos(4 * t))
+                    points.append((x, y))
+                if filled:
+                    draw.polygon(points, fill=(255, 97, 125, 255))
+                else:
+                    draw.line(points + [points[0]], fill=color, width=2, joint="curve")
+            elif kind == "info":
+                draw.ellipse((4, 4, 24, 24), outline=color, width=2)
+                draw.ellipse((13, 8, 15, 10), fill=color)
+                draw.rounded_rectangle((12, 12, 16, 21), radius=2, fill=color)
+            else:
+                draw.rounded_rectangle((4, 5, 24, 21), radius=4, outline=color, width=2)
+                draw.polygon([(9, 20), (7, 25), (14, 21)], fill=color)
+                draw.line((9, 10, 19, 10), fill=color, width=2)
+                draw.line((9, 15, 19, 15), fill=color, width=2)
+            return ImageTk.PhotoImage(image)
+        return {
+            "favorite": photo("favorite"),
+            "favorite_on": photo("favorite", True),
+            "info": photo("info"),
+            "comments": photo("comments"),
+        }
 
     def tv_button(
         self,
@@ -794,17 +829,17 @@ class App:
 
         self.mouse_pad_popup = tk.Frame(
             self.left, bg="#16202b", highlightthickness=1, highlightbackground=BORDER,
-            padx=5, pady=5,
+            padx=8, pady=8,
         )
         def arrow(text, row, col, direction):
             b = FlatButton(
                 self.mouse_pad_popup, text=text,
                 command=lambda d=direction: self.desktop_pad_move(d),
-                width=3, height=1, bg=PANEL2, fg=TEXT, activebackground=SELECTED,
-                activeforeground=TEXT, relief="flat", bd=0, font=("Sans", 12, "bold"),
+                width=5, height=2, bg=PANEL2, fg=TEXT, activebackground=SELECTED,
+                activeforeground=TEXT, relief="flat", bd=0, font=("Sans", 16, "bold"),
                 takefocus=False,
             )
-            b.grid(row=row, column=col, padx=2, pady=2)
+            b.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
         arrow("↑", 0, 1, "up")
         arrow("←", 1, 0, "left")
         arrow("↓", 1, 1, "down")
@@ -812,10 +847,10 @@ class App:
         back = FlatButton(
             self.mouse_pad_popup, text="BACK", command=self.on_controller_back,
             bg=PANEL2, fg=TEXT, activebackground=SELECTED, activeforeground=TEXT,
-            relief="flat", bd=0, padx=7, pady=5, font=("Sans", 9, "bold"),
+            relief="flat", bd=0, padx=10, pady=8, font=("Sans", 11, "bold"),
             takefocus=False, anchor="center",
         )
-        back.grid(row=2, column=0, columnspan=3, padx=2, pady=(4, 2), sticky="ew")
+        back.grid(row=2, column=0, columnspan=3, padx=3, pady=(6, 3), sticky="ew")
 
     def build_left_detail(self):
         self.detail_panel = tk.Frame(
@@ -905,102 +940,35 @@ class App:
         self.detail_actions.pack(
             fill="x",
             padx=12,
-            pady=(2, 4),
+            pady=(3, 6),
         )
 
-        self.detail_favorite_btn = FlatButton(
-            self.detail_actions,
-            text="♡ Ulubione",
-            command=self.toggle_favorite_current,
-            bg=PANEL2,
-            fg=TEXT,
-            activebackground=SELECTED,
-            activeforeground=TEXT,
-            highlightthickness=3,
-            highlightbackground=PANEL2,
-            highlightcolor=ACCENT,
-            relief="flat",
-            bd=0,
-            padx=8,
-            pady=4,
-            font=(
-                "Sans",
-                9,
-                "bold",
-            ),
-            anchor="w",
-            takefocus=True,
-        )
-        self.detail_favorite_btn.pack(
-            fill="x",
-            pady=(0, 3),
-        )
+        def detail_icon(image, command):
+            button = FlatButton(
+                self.detail_actions,
+                text="",
+                image=image,
+                command=command,
+                bg=PANEL2,
+                fg=TEXT,
+                activebackground=SELECTED,
+                activeforeground=TEXT,
+                highlightthickness=3,
+                highlightbackground=PANEL2,
+                highlightcolor=ACCENT,
+                relief="flat",
+                bd=0,
+                width=46,
+                height=40,
+                takefocus=True,
+            )
+            button.pack(side="left", padx=(0, 6))
+            return button
 
-        self.detail_description_btn = FlatButton(
-            self.detail_actions,
-            text="Opis",
-            command=lambda: self.open_movie_panel(
-                "description"
-            ),
-            bg=PANEL2,
-            fg=TEXT,
-            activebackground=SELECTED,
-            activeforeground=TEXT,
-            highlightthickness=3,
-            highlightbackground=PANEL2,
-            highlightcolor=ACCENT,
-            relief="flat",
-            bd=0,
-            padx=8,
-            pady=4,
-            font=(
-                "Sans",
-                9,
-                "bold",
-            ),
-            anchor="w",
-            takefocus=True,
-        )
-        self.detail_description_btn.pack(
-            fill="x",
-            pady=3,
-        )
-
-        self.detail_comments_btn = FlatButton(
-            self.detail_actions,
-            text="Komentarze",
-            command=lambda: self.open_movie_panel(
-                "comments"
-            ),
-            bg=PANEL2,
-            fg=TEXT,
-            activebackground=SELECTED,
-            activeforeground=TEXT,
-            highlightthickness=3,
-            highlightbackground=PANEL2,
-            highlightcolor=ACCENT,
-            relief="flat",
-            bd=0,
-            padx=8,
-            pady=4,
-            font=(
-                "Sans",
-                9,
-                "bold",
-            ),
-            anchor="w",
-            takefocus=True,
-        )
-        self.detail_comments_btn.pack(
-            fill="x",
-            pady=(3, 0),
-        )
-
-        self.detail_action_buttons = [
-            self.detail_favorite_btn,
-            self.detail_description_btn,
-            self.detail_comments_btn,
-        ]
+        self.detail_favorite_btn = detail_icon(self.detail_icons["favorite"], self.toggle_favorite_current)
+        self.detail_description_btn = detail_icon(self.detail_icons["info"], lambda: self.open_movie_panel("description"))
+        self.detail_comments_btn = detail_icon(self.detail_icons["comments"], lambda: self.open_movie_panel("comments"))
+        self.detail_action_buttons = [self.detail_favorite_btn, self.detail_description_btn, self.detail_comments_btn]
 
         self.detail_loading = tk.Label(
             self.detail_panel,
@@ -1199,7 +1167,7 @@ class App:
         self.controller.register(
             "detail_actions",
             self.detail_action_buttons,
-            columns=1,
+            columns=3,
         )
         self.controller.register(
             "collection_action",
@@ -2689,7 +2657,7 @@ class App:
         if position <= 5 or total <= 0:
             return
         pct = max(0.0, min(1.0, position / total))
-        bar = tk.Canvas(card, height=4, bg="#3c434e", highlightthickness=0, bd=0)
+        bar = tk.Canvas(card, width=1, height=4, bg="#3c434e", highlightthickness=0, bd=0)
         bar.pack(fill="x", padx=7, pady=(0, 4))
 
         def redraw(event=None):
@@ -2864,14 +2832,10 @@ class App:
             if cached_comments is not None
             else None
         )
-        self.detail_comments_btn.configure(
-            text=self.comments_button_text(
-                initial_count
-            )
-        )
-
+        self.detail_comments_btn.configure(image=self.detail_icons["comments"], text="")
         self.detail_favorite_btn.configure(
-            text="♥ Usuń" if self.db.is_favorite(item["id"]) else "♡ Ulubione"
+            image=self.detail_icons["favorite_on"] if self.db.is_favorite(item["id"]) else self.detail_icons["favorite"],
+            text="",
         )
 
         short = item.get("short_description", "").strip() or "Brak skróconego opisu na liście."
@@ -2989,7 +2953,7 @@ class App:
                 pass
         current = self.current_card_item()
         if current and current["id"] == item["id"]:
-            self.detail_favorite_btn.configure(text="♥ Usuń" if state else "♡ Ulubione")
+            self.detail_favorite_btn.configure(image=self.detail_icons["favorite_on"] if state else self.detail_icons["favorite"], text="")
         self.status.configure(text="Dodano do ulubionych." if state else "Usunięto z ulubionych.")
         return state
 
@@ -3032,11 +2996,7 @@ class App:
                 and current["id"]
                 == item["id"]
             ):
-                self.detail_comments_btn.configure(
-                    text=self.comments_button_text(
-                        len(cached)
-                    )
-                )
+                self.detail_comments_btn.configure(image=self.detail_icons["comments"], text="")
 
             return
         threading.Thread(
@@ -3584,11 +3544,7 @@ class App:
                         and current["id"]
                         == vid
                     ):
-                        self.detail_comments_btn.configure(
-                            text=self.comments_button_text(
-                                len(comments)
-                            )
-                        )
+                        self.detail_comments_btn.configure(image=self.detail_icons["comments"], text="")
 
                 elif kind == "comments_error":
                     _, vid, panel, error = event
