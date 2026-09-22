@@ -3,6 +3,7 @@ package pl.paweljarczak.cdafreeplayer;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.text.InputType;
@@ -13,6 +14,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.webkit.WebView;
 
 public final class SettingsDialog {
     public interface Listener { void onDataChanged(); }
@@ -39,6 +41,26 @@ public final class SettingsDialog {
             }
         });
         box.addView(github);
+
+        PackageInfo webView = WebView.getCurrentWebViewPackage();
+        String webViewVersion = webView == null ? "brak" : webView.versionName;
+        TextView webViewInfo = text(a, "Android System WebView: " + webViewVersion, 13, false);
+        webViewInfo.setPadding(0, dp(a, 10), 0, 0);
+        box.addView(webViewInfo);
+        Button updateWebView = button(a, "Aktualizuj Android System WebView");
+        updateWebView.setOnClickListener(v -> {
+            String pkg = webView == null ? "com.google.android.webview" : webView.packageName;
+            try {
+                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg)));
+            } catch (RuntimeException e) {
+                try {
+                    a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=" + pkg)));
+                } catch (RuntimeException ignored) {
+                    Toast.makeText(a, "Nie można otworzyć aktualizacji WebView", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+        box.addView(updateWebView);
 
         TextView updateStatus = text(a, "Aktualizacja: sprawdzanie…", 14, false);
         updateStatus.setPadding(0, dp(a, 14), 0, dp(a, 5));

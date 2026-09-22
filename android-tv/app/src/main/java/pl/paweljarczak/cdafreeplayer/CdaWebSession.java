@@ -45,14 +45,15 @@ public final class CdaWebSession {
     }
 
     private static final String TAG = "CDAFP";
-    private static final long INTERACTIVE_GRACE_MS = 700;
+    private static final long INTERACTIVE_GRACE_MS = 250;
     private static final long NORMAL_SETTLE_MS = 250;
     private static final long SEARCH_SETTLE_MS = 2500;
     private static final long PLAYER_SETTLE_MS = 12000;
     private static final long INSPECT_RETRY_MS = 180;
     private static final long CHALLENGE_RETRY_MS = 900;
     private static final long FULL_SITE_TIMEOUT_MS = 8000;
-    private static final long PLAYBACK_IDLE_MS = 1200;
+    private static final long PLAYBACK_IDLE_MS = 900;
+    private static final long BROWSE_IDLE_MS = 1800;
 
     private static final Set<String> CDA_ORIGINS = new HashSet<>(Arrays.asList(
             "https://cda.pl",
@@ -115,6 +116,10 @@ public final class CdaWebSession {
 
         long webStarted = SystemClock.elapsedRealtime();
         web = new WebView(activity);
+        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        web.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        web.setHorizontalScrollBarEnabled(false);
+        web.setVerticalScrollBarEnabled(false);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -267,7 +272,7 @@ public final class CdaWebSession {
         current = jobs.poll();
         if (current == null) {
             parkIdleWeb();
-            if (playbackContext) scheduleDestroy();
+            scheduleDestroy();
             return;
         }
         if (current.token != null && current.token.isCancelled()) {
@@ -344,12 +349,12 @@ public final class CdaWebSession {
 
     private void inspectFullSiteBootstrap(final Job job) {
         if (job != current || web == null) return;
+        String deep = challengeSince == 0L ?
+                "var s=(document.body&&document.body.innerText.length<4096?document.body.innerText:'').toLowerCase();" +
+                "if(s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0)return 'CF';" : "";
         String script = "(function(){try{" +
-                "var s=(document.body?document.body.innerText:'').toLowerCase();" +
                 "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
-                "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
-                "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
-                "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF';" +
+                "(document.title||'').toLowerCase().indexOf('just a moment')>=0)return 'CF';" + deep +
                 "return document.readyState+'|'+location.host+'|'+location.pathname;}catch(e){return 'ERR';}})()";
         web.evaluateJavascript(script, value -> {
             job.inspecting = false;
@@ -401,13 +406,13 @@ public final class CdaWebSession {
             return;
         }
 
+        String deep = challengeSince == 0L ?
+                "var s=(document.body&&document.body.innerText.length<4096?document.body.innerText:'').toLowerCase();" +
+                "if(s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0)return 'CF:';" : "";
         String script = "(function(){try{" +
                 "var raw=window.__CDA_FP_READ_PLAYER?window.__CDA_FP_READ_PLAYER():'';if(raw)return 'PD:'+raw;" +
-                "var s=(document.body?document.body.innerText:'').toLowerCase();" +
                 "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
-                "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
-                "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
-                "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF:';" +
+                "(document.title||'').toLowerCase().indexOf('just a moment')>=0)return 'CF:';" + deep +
                 "return 'OK:'+document.readyState;}catch(e){return 'ERR:'+String(e);}})()";
 
         web.evaluateJavascript(script, value -> {
@@ -459,12 +464,14 @@ public final class CdaWebSession {
     }
 
     private void inspectPage(final Job job) {
-        String script = "(function(){var s=(document.body?document.body.innerText:'').toLowerCase();" +
+        String deep = challengeSince == 0L ?
+                "var s=(document.body&&document.body.innerText.length<4096?document.body.innerText:'').toLowerCase();" +
+                "if(s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0)return 'CF';" : "";
+        String script = "(function(){try{" +
                 "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
-                "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
-                "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
-                "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF';" +
-                "return document.readyState+':'+(document.querySelector('.video-clip-wrapper,.link-title-visit,a[href*=\"/video/\"]')?'1':'0');})()";
+                "(document.title||'').toLowerCase().indexOf('just a moment')>=0)return 'CF';" + deep +
+                "return document.readyState+':'+(document.querySelector('.video-clip-wrapper,.link-title-visit,a[href*=\"/video/\"]')?'1':'0');" +
+                "}catch(e){return 'ERR';}})()";
         web.evaluateJavascript(script, value -> {
             job.inspecting = false;
             if (job != current || web == null) return;
@@ -688,10 +695,8 @@ public final class CdaWebSession {
         if (web == null) return;
         web.setFocusable(false);
         web.setFocusableInTouchMode(false);
-        if (playbackContext) {
-            try { web.stopLoading(); } catch (Exception ignored) {}
-            try { web.loadUrl("about:blank"); } catch (Exception ignored) {}
-        }
+        try { web.stopLoading(); } catch (Exception ignored) {}
+        try { web.loadUrl("about:blank"); } catch (Exception ignored) {}
         try { web.onPause(); } catch (Exception ignored) {}
     }
 
@@ -710,15 +715,16 @@ public final class CdaWebSession {
     private void scheduleDestroy() {
         if (destroyTask != null) h.removeCallbacks(destroyTask);
         destroyTask = null;
-        if (!playbackContext || web == null || current != null) return;
+        if (web == null || current != null) return;
+        final long delay = playbackContext ? PLAYBACK_IDLE_MS : BROWSE_IDLE_MS;
         destroyTask = () -> {
             destroyTask = null;
-            if (current != null || web == null || !playbackContext) return;
+            if (current != null || web == null) return;
             flushCookies();
             dropWeb();
-            Log.i(TAG, "Playback WebView released after idle");
+            Log.i(TAG, (playbackContext ? "Playback" : "Browse") + " WebView released after idle");
         };
-        h.postDelayed(destroyTask, PLAYBACK_IDLE_MS);
+        h.postDelayed(destroyTask, delay);
     }
 
     private void dropWeb() {

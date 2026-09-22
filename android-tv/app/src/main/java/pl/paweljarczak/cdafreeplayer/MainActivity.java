@@ -72,6 +72,8 @@ public final class MainActivity extends Activity {
     private UpdateManager updater;
     private SpeechRecognizer speechRecognizer;
     private boolean voiceListening;
+    private boolean challengeMode;
+    private Runnable detailImageTask;
     private final ArrayList<Movie> browseItems = new ArrayList<>();
     private String browseTitle = "Lektor 1985";
     private int browseLastCard;
@@ -84,9 +86,11 @@ public final class MainActivity extends Activity {
         images = new ImageLoader(this);
         updater = new UpdateManager(this);
         repo = new CdaRepository(this, securityOverlay, findViewById(R.id.securityHost));
-        repo.setVerificationObserver((interactive, background) -> setStatus(
-                interactive ? "Weryfikacja zabezpieczeń CDA" :
-                        background ? "Weryfikacja sesji w tle…" : "Weryfikacja w tle…"));
+        repo.setVerificationObserver((interactive, background) -> {
+            setChallengeMode(interactive);
+            setStatus(interactive ? "Weryfikacja zabezpieczeń CDA" :
+                    background ? "Weryfikacja sesji w tle…" : "Weryfikacja w tle…");
+        });
         setupGrid();
         setupYears();
         setupFilters();
@@ -117,7 +121,12 @@ public final class MainActivity extends Activity {
         gridLayout = new GridLayoutManager(this, cols);
         grid.setLayoutManager(gridLayout);
         grid.setHasFixedSize(true);
-        grid.setItemViewCacheSize(cols * 3);
+        grid.setItemAnimator(null);
+        grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        grid.setItemViewCacheSize(cols * 5);
+        gridLayout.setItemPrefetchEnabled(true);
+        grid.getRecycledViewPool().setMaxRecycledViews(0, cols * 8);
+        grid.getRecycledViewPool().setMaxRecycledViews(1, 8);
         adapter = new MovieAdapter(images, new MovieAdapter.Listener() {
             @Override public void onFocus(Movie m, int p, View v) {
                 lastCard = p;
@@ -146,6 +155,26 @@ public final class MainActivity extends Activity {
                 if (dy > 0 && collectionMode == null && gridLayout.findLastVisibleItemPosition() >= adapter.getItemCount() - cols) repo.loadNext();
             }
         });
+    }
+
+
+    private void setChallengeMode(boolean active) {
+        if (challengeMode == active || images == null || grid == null) return;
+        challengeMode = active;
+        if (active) {
+            images.pause();
+            grid.suppressLayout(true);
+            loadingBar.setVisibility(View.GONE);
+            return;
+        }
+        grid.suppressLayout(false);
+        images.resume();
+        if (gridLayout == null || adapter == null) return;
+        int first = gridLayout.findFirstVisibleItemPosition();
+        int last = gridLayout.findLastVisibleItemPosition();
+        if (first != RecyclerView.NO_POSITION && last >= first) {
+            adapter.notifyItemRangeChanged(first, last - first + 1);
+        }
     }
 
     private Button tvButton(String text) {
@@ -642,7 +671,12 @@ public final class MainActivity extends Activity {
         m.title = MovieTitle.clean(m.title, m.duration);
         showDetail();
         detailTitle.setText(m.title);
-        images.load(m.imageUrl, detailThumb);
+        if (detailImageTask != null) h.removeCallbacks(detailImageTask);
+        final Movie imageMovie = m;
+        detailImageTask = () -> {
+            if (focused == imageMovie) images.load(imageMovie.imageUrl, detailThumb);
+        };
+        h.postDelayed(detailImageTask, 60);
         detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
         if (m.rating == null) {
             detailRating.setText("");

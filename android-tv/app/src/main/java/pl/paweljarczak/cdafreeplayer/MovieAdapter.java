@@ -183,7 +183,8 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         h.root.setOnFocusChangeListener((v, focused) -> {
             v.animate().cancel();
             v.setTranslationZ(focused ? 18f * v.getResources().getDisplayMetrics().density : 0f);
-            v.animate().scaleX(focused ? 1.035f : 1f).scaleY(focused ? 1.035f : 1f).setDuration(75).start();
+            v.setScaleX(focused ? 1.025f : 1f);
+            v.setScaleY(focused ? 1.025f : 1f);
             if (!focused) return;
             int p = h.getBindingAdapterPosition();
             if (p == RecyclerView.NO_POSITION) return;
@@ -217,6 +218,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private int movieIndexInSection(int position) {
+        if (!sectioned) return position;
         int n = 0;
         for (int i = position - 1; i >= 0; i--) {
             if (rows.get(i) instanceof String) break;
@@ -226,12 +228,26 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private int movieOrdinal(int position) {
+        if (!sectioned) return position;
         int n = 0;
         for (int i = 0; i < position; i++) if (rows.get(i) instanceof Movie) n++;
         return n;
     }
 
     @Override public int getItemCount() { return rows.size(); }
+
+    @Override
+    public void onViewRecycled(@NonNull RecyclerView.ViewHolder holder) {
+        if (holder instanceof Holder) {
+            Holder h = (Holder) holder;
+            images.cancel(h.image);
+            h.root.animate().cancel();
+            h.root.setScaleX(1f);
+            h.root.setScaleY(1f);
+            h.root.setTranslationZ(0f);
+        }
+        super.onViewRecycled(holder);
+    }
 
     static final class HeaderHolder extends RecyclerView.ViewHolder {
         final TextView title;
