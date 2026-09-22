@@ -77,9 +77,9 @@ public final class CdaParser {
         Movie m = new Movie();
         m.id = id;
         m.url = "https://www.cda.pl/video/" + id;
-        m.title = title;
-        m.imageUrl = imageFromTile(tile);
         m.duration = durationFromTile(tile);
+        m.title = MovieTitle.clean(title, m.duration);
+        m.imageUrl = imageFromTile(tile);
         m.shortDescription = tooltip(tile);
         m.rating = ratingFromTile(tile);
         page.movies.add(m);

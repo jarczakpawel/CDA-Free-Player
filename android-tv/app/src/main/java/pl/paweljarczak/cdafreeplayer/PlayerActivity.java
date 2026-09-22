@@ -57,8 +57,8 @@ public final class PlayerActivity extends Activity {
     private final ArrayList<Source> sources = new ArrayList<>();
     private PlayerView playerView;
     private ExoPlayer player;
-    private View osd, ratingTop, securityOverlay;
-    private TextView seekHint, current, remaining, duration, title, ratingExact;
+    private View osd, ratingTop, securityOverlay, contentLoadingOverlay;
+    private TextView seekHint, current, remaining, duration, title, ratingExact, contentLoadingText;
     private SeekBar seek;
     private StarRatingView stars;
     private ImageButton favorite, description, comments;
@@ -72,7 +72,9 @@ public final class PlayerActivity extends Activity {
     private long initialResume = 0, lastPeriodicSave = 0;
     private int sourceIndex = 0;
     private Runnable tick, hideOsd, hideHint;
-    private boolean resumePlaying = true, readyToSave, fatalError;
+    private boolean resumePlaying = true, readyToSave, fatalError, contentLoading;
+    private RequestToken contentToken;
+    private View contentReturnFocus;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -99,13 +101,14 @@ public final class PlayerActivity extends Activity {
         remaining = findViewById(R.id.remainingTime); duration = findViewById(R.id.durationTime); title = findViewById(R.id.playerTitle);
         stars = findViewById(R.id.playerStars); ratingExact = findViewById(R.id.playerRatingExact); favorite = findViewById(R.id.playerFavorite);
         description = findViewById(R.id.playerDescription); comments = findViewById(R.id.playerComments); quality = findViewById(R.id.playerQuality);
+        contentLoadingOverlay = findViewById(R.id.contentLoadingOverlay); contentLoadingText = findViewById(R.id.contentLoadingText);
         securityOverlay = findViewById(R.id.securityOverlay);
     }
 
     private void readIntent() {
         Intent i = getIntent();
         movie.id = safe(i.getStringExtra("id")); movie.title = safe(i.getStringExtra("title")); movie.url = safe(i.getStringExtra("url"));
-        movie.duration = safe(i.getStringExtra("durationText")); movie.imageUrl = safe(i.getStringExtra("image"));
+        movie.duration = safe(i.getStringExtra("durationText")); movie.title = MovieTitle.clean(movie.title, movie.duration); movie.imageUrl = safe(i.getStringExtra("image"));
         dash = safe(i.getStringExtra("dash")); hls = safe(i.getStringExtra("hls")); direct = safe(i.getStringExtra("direct"));
         resolved = safe(i.getStringExtra("resolved")); resolvedKind = safe(i.getStringExtra("resolvedKind"));
         initialResume = Math.max(0, i.getLongExtra("resume", 0));
@@ -267,7 +270,9 @@ public final class PlayerActivity extends Activity {
         });
         for (View v : new View[]{favorite, description, comments, quality}) {
             v.setOnKeyListener((x, key, e) -> {
-                if (e.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_UP) { seek.requestFocus(); return true; }
+                if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (key == KeyEvent.KEYCODE_DPAD_UP) { seek.requestFocus(); return true; }
+                if (key == KeyEvent.KEYCODE_DPAD_DOWN) { hideOsd(); return true; }
                 resetHide(); return false;
             });
         }
@@ -330,32 +335,98 @@ public final class PlayerActivity extends Activity {
     private void loadDescription() {
         MovieMetadata cached = db.getMetadata(movie.id);
         if (cached != null && cached.description != null && !cached.description.isEmpty()) {
-            metadata.description = cached.description;
+            applyMetadata(cached);
             TvDialogs.text(this, "Opis", metadata.description);
             resetHide();
             return;
         }
+        beginContentLoad("Wczytywanie opisu…", description);
         description.setContentDescription("Opis — wczytywanie");
-        repo.loadMetadata(movie, true, new CdaRepository.MetadataListener() {
+        contentToken = repo.loadMetadata(movie, true, new CdaRepository.MetadataListener() {
             @Override public void onMetadata(MovieMetadata md) {
-                if (md != null && md.description != null && !md.description.isEmpty()) metadata.description = md.description;
+                applyMetadata(md);
                 description.setContentDescription("Opis");
+                endContentLoad();
                 TvDialogs.text(PlayerActivity.this, "Opis", metadata.description);
                 resetHide();
             }
             @Override public void onError(String e) {
                 description.setContentDescription("Opis");
+                endContentLoad();
                 Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show();
                 resetHide();
             }
         });
     }
+
     private void loadComments() {
+        beginContentLoad("Wczytywanie komentarzy…", comments);
         comments.setContentDescription("Komentarze — wczytywanie");
-        repo.loadComments(movie, new CdaRepository.CommentsListener() {
-            @Override public void onComments(ArrayList<CommentItem> c) { updateCommentsDescription(c.size()); TvDialogs.comments(PlayerActivity.this, c); resetHide(); }
-            @Override public void onError(String e) { updateCommentsDescription(metadata.commentCount); Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show(); }
+        contentToken = repo.loadComments(movie, new CdaRepository.CommentsListener() {
+            @Override public void onComments(ArrayList<CommentItem> c) {
+                MovieMetadata md = db.getMetadata(movie.id);
+                applyMetadata(md);
+                updateCommentsDescription(c.size());
+                endContentLoad();
+                TvDialogs.comments(PlayerActivity.this, c);
+                resetHide();
+            }
+            @Override public void onError(String e) {
+                updateCommentsDescription(metadata.commentCount);
+                endContentLoad();
+                Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show();
+                resetHide();
+            }
         });
+    }
+
+    private void applyMetadata(MovieMetadata md) {
+        if (md == null) return;
+        if (md.description != null && !md.description.isEmpty()) metadata.description = md.description;
+        if (md.rating != null) metadata.rating = md.rating;
+        if (md.cdaVotes != null) metadata.cdaVotes = md.cdaVotes;
+        if (md.imdbRating != null && !md.imdbRating.isEmpty()) metadata.imdbRating = md.imdbRating;
+        if (md.imdbVotes != null) metadata.imdbVotes = md.imdbVotes;
+        if (md.commentCount != null) metadata.commentCount = md.commentCount;
+        if (metadata.rating != null) {
+            ratingTop.setVisibility(View.VISIBLE);
+            stars.setRating(metadata.rating);
+            ratingExact.setText(String.format(Locale.US, "%.1f / 5", metadata.rating));
+        }
+        updateCommentsDescription(metadata.commentCount);
+    }
+
+    private void beginContentLoad(String text, View returnFocus) {
+        if (contentLoading) return;
+        contentLoading = true;
+        contentReturnFocus = returnFocus;
+        h.removeCallbacks(hideOsd);
+        contentLoadingText.setText(text);
+        contentLoadingOverlay.setVisibility(View.VISIBLE);
+        contentLoadingOverlay.requestFocus();
+    }
+
+    private void endContentLoad() {
+        contentToken = null;
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        if (osdVisible && focus != null) focus.requestFocus();
+    }
+
+    private void cancelContentLoad() {
+        RequestToken token = contentToken;
+        contentToken = null;
+        if (token != null) repo.cancel(token);
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        description.setContentDescription("Opis");
+        updateCommentsDescription(metadata.commentCount);
+        if (osdVisible && focus != null) focus.requestFocus();
+        resetHide();
     }
 
     private void showQuality() {
@@ -385,6 +456,10 @@ public final class PlayerActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
         if (player == null) return super.dispatchKeyEvent(e);
+        if (contentLoading) {
+            if (e.getAction() == KeyEvent.ACTION_DOWN && e.getKeyCode() == KeyEvent.KEYCODE_BACK) cancelContentLoad();
+            return true;
+        }
         if (repo.gateway().webSession().isInteractive()) {
             if (e.getAction() == KeyEvent.ACTION_DOWN && e.getKeyCode() == KeyEvent.KEYCODE_BACK) {
                 repo.gateway().webSession().cancelCurrent(); return true;
@@ -440,6 +515,7 @@ public final class PlayerActivity extends Activity {
 
     @Override
     protected void onStop() {
+        if (contentLoading) cancelContentLoad();
         h.removeCallbacksAndMessages(null);
         if (player != null) {
             saveProgress();

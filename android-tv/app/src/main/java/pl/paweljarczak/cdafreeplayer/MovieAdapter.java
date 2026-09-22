@@ -23,6 +23,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         void onFocus(Movie m, int pos, View v);
         void onClick(Movie m, int pos);
         void onLeftEdge(Movie m, int pos);
+        void onTopRow(Movie m, int pos);
         void onLastRow(int pos);
     }
 
@@ -87,6 +88,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     public void onBindViewHolder(@NonNull Holder h, int pos) {
         Movie m = items.get(pos);
         h.root.setBackgroundResource(removeMode ? R.drawable.card_bg_remove : R.drawable.card_bg);
+        m.title = MovieTitle.clean(m.title, m.duration);
         h.title.setText(m.title);
         h.duration.setText(m.duration);
         images.load(m.imageUrl, h.image);
@@ -145,6 +147,10 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
                 return true;
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP && p / columns == 0) {
+                listener.onTopRow(m, p);
+                return true;
+            }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
             if (key == KeyEvent.KEYCODE_DPAD_LEFT && p % columns == 0) {
                 listener.onLeftEdge(m, p);

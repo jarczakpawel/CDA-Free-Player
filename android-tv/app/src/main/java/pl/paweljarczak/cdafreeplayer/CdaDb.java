@@ -79,6 +79,7 @@ public final class CdaDb extends SQLiteOpenHelper {
     private ContentValues movieValues(Movie m) {
         ContentValues v = new ContentValues();
         v.put("id", m.id);
+        m.title = MovieTitle.clean(m.title, m.duration);
         v.put("title", m.title);
         v.put("url", m.url);
         v.put("duration", m.duration);
@@ -133,6 +134,7 @@ public final class CdaDb extends SQLiteOpenHelper {
                 m.title = c.getString(1);
                 m.url = c.getString(2);
                 m.duration = c.getString(3);
+                m.title = MovieTitle.clean(m.title, m.duration);
                 m.imageUrl = c.getString(4);
                 m.positionMs = c.getLong(5);
                 m.mediaDurationMs = c.getLong(6);

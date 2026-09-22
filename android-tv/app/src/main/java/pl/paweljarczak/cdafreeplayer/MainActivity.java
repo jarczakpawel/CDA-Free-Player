@@ -2,11 +2,13 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.RecognizerIntent;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
@@ -35,6 +37,7 @@ public final class MainActivity extends Activity {
     private static final int DEFAULT_YEAR = 1985;
     private static final int INITIAL_TARGET = 12;
     private static final int INITIAL_MAX_PAGES = 4;
+    private static final int VOICE_SEARCH_REQUEST = 7301;
 
     private final Handler h = new Handler(Looper.getMainLooper());
     private CdaRepository repo;
@@ -46,7 +49,7 @@ public final class MainActivity extends Activity {
     private RecyclerView grid;
     private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailDescriptionPreview;
     private ImageView detailThumb;
-    private ImageButton detailFavorite, detailDescription, detailComments, filterButton;
+    private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
     private Button recent, favorites, manualSearch, settingsButton, removeCollection;
     private EditText manualQuery;
     private View loadingBar;
@@ -92,7 +95,7 @@ public final class MainActivity extends Activity {
         detailFavorite = findViewById(R.id.detailFavorite); detailDescription = findViewById(R.id.detailDescription);
         detailComments = findViewById(R.id.detailComments); detailDescriptionPreview = findViewById(R.id.detailDescriptionPreview);
         recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
-        manualQuery = findViewById(R.id.manualQuery); manualSearch = findViewById(R.id.manualSearch);
+        manualQuery = findViewById(R.id.manualQuery); manualSearch = findViewById(R.id.manualSearch); voiceSearch = findViewById(R.id.voiceSearch);
         settingsButton = findViewById(R.id.settingsButton); removeCollection = findViewById(R.id.removeCollection);
         securityOverlay = findViewById(R.id.securityOverlay);
     }
@@ -110,6 +113,11 @@ public final class MainActivity extends Activity {
                 if (removeMode) removeFromCollection(m); else play(m);
             }
             @Override public void onLeftEdge(Movie m, int p) { lastCard = p; showMovie(m); focusDetailActions(); }
+            @Override public void onTopRow(Movie m, int p) {
+                lastCard = p;
+                if (removeCollection.getVisibility() == View.VISIBLE) removeCollection.requestFocus();
+                else filterButton.requestFocus();
+            }
             @Override public void onLastRow(int p) { repo.loadNext(); }
         });
         adapter.setColumns(cols);
@@ -163,7 +171,8 @@ public final class MainActivity extends Activity {
                 return true;
             }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
-                focusFirstCard();
+                if (removeCollection.getVisibility() == View.VISIBLE) removeCollection.requestFocus();
+                else focusFirstCard();
                 return true;
             }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
@@ -270,13 +279,21 @@ public final class MainActivity extends Activity {
         recent.setOnClickListener(v -> showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"));
         favorites.setOnClickListener(v -> showCollection(repo.db().favorites(), "Ulubione", "favorites"));
         manualSearch.setOnClickListener(v -> manualSearch());
+        voiceSearch.setOnClickListener(v -> startVoiceSearch());
         settingsButton.setOnClickListener(v -> SettingsDialog.show(this, repo.db(), updater, this::refreshCurrentCollection));
         removeCollection.setOnClickListener(v -> toggleRemoveMode());
         manualQuery.setOnEditorActionListener((v, action, event) -> {
             if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); return true; }
             return false;
         });
-        for (View v : new View[]{recent, favorites, manualSearch, settingsButton}) {
+        manualQuery.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                manualSearch.requestFocus();
+                return true;
+            }
+            return false;
+        });
+        for (View v : new View[]{recent, favorites, settingsButton}) {
             v.setOnKeyListener((x, key, event) -> {
                 if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_RIGHT) {
                     focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true;
@@ -284,6 +301,26 @@ public final class MainActivity extends Activity {
                 return false;
             });
         }
+        manualSearch.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { voiceSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            return false;
+        });
+        voiceSearch.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { manualSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { settingsButton.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { manualSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            return false;
+        });
+        removeCollection.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { filterButton.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { focusFirstCard(); return true; }
+            return key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT;
+        });
         detailFavorite.setOnClickListener(v -> {
             if (focused == null) return;
             focused.favorite = repo.db().toggleFavorite(focused);
@@ -310,6 +347,33 @@ public final class MainActivity extends Activity {
             if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { restoreCard(); return true; }
             return false;
         });
+    }
+
+    private void startVoiceSearch() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Powiedz czego szukasz");
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        try {
+            startActivityForResult(intent, VOICE_SEARCH_REQUEST);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "Brak systemowej usługi rozpoznawania mowy", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != VOICE_SEARCH_REQUEST || resultCode != RESULT_OK || data == null) return;
+        ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        if (results == null || results.isEmpty()) return;
+        String spoken = results.get(0) == null ? "" : results.get(0).trim();
+        if (spoken.isEmpty()) return;
+        manualQuery.setText(spoken);
+        manualQuery.setSelection(spoken.length());
+        selectedYear = null;
+        startSearch(spoken, "Wyniki: " + spoken);
     }
 
     private void manualSearch() {
@@ -401,6 +465,7 @@ public final class MainActivity extends Activity {
 
     private void showMovie(Movie m) {
         focused = m;
+        m.title = MovieTitle.clean(m.title, m.duration);
         showDetail();
         detailTitle.setText(m.title);
         images.load(m.imageUrl, detailThumb);
@@ -474,11 +539,13 @@ public final class MainActivity extends Activity {
                 images.trimForPlayback();
                 launchedPlayer = true;
                 Intent i = new Intent(MainActivity.this, PlayerActivity.class);
+                m.title = MovieTitle.clean(m.title, m.duration);
                 i.putExtra("id", m.id); i.putExtra("title", m.title); i.putExtra("url", m.url);
                 i.putExtra("durationText", m.duration); i.putExtra("image", m.imageUrl);
                 i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
                 i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);
+                if (m.rating != null) i.putExtra("rating", m.rating);
                 try {
                     startActivity(i);
                     setStatus("Gotowe");

@@ -179,11 +179,11 @@ public final class CdaRepository {
         return base + "?duration=" + Uri.encode(duration) + "&s=" + Uri.encode(sort);
     }
 
-    public void loadMetadata(Movie m, boolean allowWeb, MetadataListener listener) {
+    public RequestToken loadMetadata(Movie m, boolean allowWeb, MetadataListener listener) {
         MovieMetadata cached = db.getMetadata(m.id);
         if (cached != null && cached.description != null && !cached.description.isEmpty()) {
             listener.onMetadata(cached);
-            return;
+            return null;
         }
         RequestToken token = new RequestToken();
         requests.add(token);
@@ -192,7 +192,7 @@ public final class CdaRepository {
                 if (closed || token.isCancelled()) return;
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
-                    MovieMetadata md = CdaParser.parseMetadata(html);
+                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
                     db.saveMetadata(m.id, md);
                     deliver(token, () -> listener.onMetadata(md));
                 });
@@ -201,13 +201,14 @@ public final class CdaRepository {
             @Override public void onChallengeRequired() { deliver(token, () -> listener.onError("Weryfikacja zabezpieczeń wymagana")); }
             @Override public void onVerification(boolean interactive) { notifyVerification(interactive, false); }
         });
+        return token;
     }
 
-    public void loadComments(Movie m, CommentsListener listener) {
+    public RequestToken loadComments(Movie m, CommentsListener listener) {
         ArrayList<CommentItem> cached = db.getComments(m.id);
         if (cached != null) {
             listener.onComments(cached);
-            return;
+            return null;
         }
         RequestToken token = new RequestToken();
         requests.add(token);
@@ -217,7 +218,10 @@ public final class CdaRepository {
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
                     ArrayList<CommentItem> comments = CdaParser.parseComments(html);
+                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
+                    if (md.commentCount == null) md.commentCount = comments.size();
                     db.saveComments(m.id, comments);
+                    db.saveMetadata(m.id, md);
                     deliver(token, () -> listener.onComments(comments));
                 });
             }
@@ -225,6 +229,14 @@ public final class CdaRepository {
             @Override public void onChallengeRequired() { deliver(token, () -> listener.onError("Weryfikacja zabezpieczeń wymagana")); }
             @Override public void onVerification(boolean interactive) { notifyVerification(interactive, false); }
         });
+        return token;
+    }
+
+    public void cancel(RequestToken token) {
+        if (token == null) return;
+        token.cancel();
+        requests.remove(token);
+        gateway.webSession().cancel(token);
     }
 
     public void loadPlayer(Movie m, PlayerListener listener) {
@@ -370,6 +382,18 @@ public final class CdaRepository {
             return null;
         }
         return c;
+    }
+
+    private static MovieMetadata mergeMetadata(MovieMetadata fresh, MovieMetadata old) {
+        if (fresh == null) fresh = new MovieMetadata();
+        if (old == null) return fresh;
+        if (fresh.description == null || fresh.description.isEmpty()) fresh.description = old.description;
+        if (fresh.rating == null) fresh.rating = old.rating;
+        if (fresh.cdaVotes == null) fresh.cdaVotes = old.cdaVotes;
+        if (fresh.imdbRating == null || fresh.imdbRating.isEmpty()) fresh.imdbRating = old.imdbRating;
+        if (fresh.imdbVotes == null) fresh.imdbVotes = old.imdbVotes;
+        if (fresh.commentCount == null) fresh.commentCount = old.commentCount;
+        return fresh;
     }
 
     private void notifyVerification(boolean interactive, boolean background) {

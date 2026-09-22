@@ -30,6 +30,7 @@ public final class Movie {
         m.title = o.optString("title");
         m.url = o.optString("url");
         m.duration = o.optString("duration");
+        m.title = MovieTitle.clean(m.title, m.duration);
         m.imageUrl = o.optString("image");
         m.shortDescription = o.optString("short");
         if (o.has("rating")) m.rating = o.optDouble("rating");

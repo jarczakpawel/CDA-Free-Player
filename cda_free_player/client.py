@@ -416,6 +416,18 @@ def parse_results(page_html):
             " ",
             strip=True,
         )
+        duration = tile.select_one(
+            "span.timeElem"
+        )
+        duration_text = (
+            duration.get_text(" ", strip=True)
+            if duration
+            else ""
+        )
+        if duration_text and title.startswith(duration_text):
+            cleaned = re.sub(r"^[\s|•·:;,_/\-–—]+", "", title[len(duration_text):]).strip()
+            if cleaned:
+                title = cleaned
 
         if re.search(
             r"(?i)\bpremium\b",
@@ -454,24 +466,13 @@ def parse_results(page_html):
                     + image_url
                 )
 
-        duration = tile.select_one(
-            "span.timeElem"
-        )
-
         videos.append({
             "id": vid,
             "title": title,
             "url": (
                 f"{BASE}/video/{vid}"
             ),
-            "duration": (
-                duration.get_text(
-                    " ",
-                    strip=True,
-                )
-                if duration
-                else ""
-            ),
+            "duration": duration_text,
             "image": image_url,
             "short_description": (
                 tooltip_from_tile(

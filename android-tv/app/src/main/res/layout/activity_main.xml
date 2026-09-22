@@ -69,14 +69,32 @@
                     android:textColor="@color/text"
                     android:textColorHint="#6F7783"/>
 
-                <Button
-                    android:id="@+id/manualSearch"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="46dp"
                     android:layout_marginTop="5dp"
-                    android:background="@drawable/button_bg"
-                    android:text="Szukaj"
-                    android:textColor="@color/text"/>
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/manualSearch"
+                        android:layout_width="0dp"
+                        android:layout_height="46dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/button_bg"
+                        android:text="Szukaj"
+                        android:textColor="@color/text"/>
+
+                    <ImageButton
+                        android:id="@+id/voiceSearch"
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:layout_marginStart="5dp"
+                        android:background="@drawable/button_bg"
+                        android:contentDescription="Wyszukiwanie głosowe"
+                        android:padding="10dp"
+                        android:scaleType="centerInside"
+                        android:src="@drawable/ic_mic"/>
+                </LinearLayout>
 
                 <Button
                     android:id="@+id/settingsButton"
