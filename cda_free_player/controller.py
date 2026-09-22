@@ -138,19 +138,22 @@ class DPadController:
             return
 
         if self.zone == "cards":
-            cols = self.zones["cards"]["columns"]
-
-            if self.index % cols:
-                self.focus(
-                    "cards",
-                    self.index - 1,
-                )
+            if self._collection_mode():
+                target = self._card_horizontal_neighbor(-1)
+                if target is not None:
+                    self.focus("cards", target)
+                else:
+                    self.focus("left", self._section_left_index())
             else:
-                self.focus(
-                    "left",
-                    0,
-                )
+                cols = self.zones["cards"]["columns"]
+                if self.index % cols:
+                    self.focus("cards", self.index - 1)
+                else:
+                    self.focus("left", self._section_left_index())
+            return
 
+        if self.zone == "collection_action":
+            self.focus("left", self._section_left_index())
             return
 
         if self.zone == "detail_actions":
@@ -182,7 +185,13 @@ class DPadController:
             return
 
         if self.zone == "left":
-            self.focus("years", self._selected_year_index())
+            if self._collection_mode():
+                if self.zones.get("collection_action", {}).get("widgets"):
+                    self.focus("collection_action", 0)
+                elif self.zones.get("cards", {}).get("widgets"):
+                    self.focus("cards", 0)
+            else:
+                self.focus("years", self._selected_year_index())
             return
 
         if self.zone == "years":
@@ -198,13 +207,23 @@ class DPadController:
             return
 
         if self.zone == "cards":
-            cols = self.zones["cards"]["columns"]
-            widgets = self.zones["cards"]["widgets"]
-            if self.index % cols < cols - 1 and self.index + 1 < len(widgets):
-                self.focus("cards", self.index + 1)
+            if self._collection_mode():
+                target = self._card_horizontal_neighbor(1)
+                if target is not None:
+                    self.focus("cards", target)
+            else:
+                cols = self.zones["cards"]["columns"]
+                widgets = self.zones["cards"]["widgets"]
+                if self.index % cols < cols - 1 and self.index + 1 < len(widgets):
+                    self.focus("cards", self.index + 1)
             return
 
         if self.zone == "search_entry":
+            return
+
+        if self.zone == "collection_action":
+            if self.zones.get("cards", {}).get("widgets"):
+                self.focus("cards", 0)
             return
 
     def up(self):
@@ -222,11 +241,15 @@ class DPadController:
             return
 
         if self.zone == "search_entry":
-            self.focus("left", 1)
+            self.focus("left", 2)
             return
 
         if self.zone == "years":
-            self.focus("left", 2)
+            self.focus("left", 3)
+            return
+
+        if self.zone == "collection_action":
+            self.focus("left", self._section_left_index())
             return
 
         if self.zone == "sort":
@@ -238,11 +261,18 @@ class DPadController:
             return
 
         if self.zone == "cards":
-            cols = self.zones["cards"]["columns"]
-            if self.index >= cols:
-                self.focus("cards", self.index - cols)
+            if self._collection_mode():
+                target = self._card_vertical_neighbor(-1)
+                if target is not None:
+                    self.focus("cards", target)
+                else:
+                    self.focus("collection_action", 0)
             else:
-                self.focus("duration", self._selected_duration_index())
+                cols = self.zones["cards"]["columns"]
+                if self.index >= cols:
+                    self.focus("cards", self.index - cols)
+                else:
+                    self.focus("duration", self._selected_duration_index())
 
     def down(self):
         if self.zone == "detail_actions":
@@ -262,14 +292,14 @@ class DPadController:
 
         if self.zone == "left":
             widgets = self.zones["left"]["widgets"]
-            if self.index == 1 and "search_entry" in self.zones:
+            if self.index == 2 and "search_entry" in self.zones:
                 self.focus("search_entry", 0)
             elif self.index + 1 < len(widgets):
                 self.focus("left", self.index + 1)
             return
 
         if self.zone == "search_entry":
-            self.focus("left", min(2, len(self.zones["left"]["widgets"]) - 1))
+            self.focus("left", min(3, len(self.zones["left"]["widgets"]) - 1))
             return
 
         if self.zone == "years":
@@ -285,14 +315,58 @@ class DPadController:
                 self.focus("cards", 0)
             return
 
+        if self.zone == "collection_action":
+            if self.zones.get("cards", {}).get("widgets"):
+                self.focus("cards", 0)
+            return
+
         if self.zone == "cards":
-            cols = self.zones["cards"]["columns"]
-            widgets = self.zones["cards"]["widgets"]
-            target = self.index + cols
-            if target < len(widgets):
-                self.focus("cards", target)
-            elif widgets:
-                self.focus("cards", len(widgets) - 1)
+            if self._collection_mode():
+                target = self._card_vertical_neighbor(1)
+                if target is not None:
+                    self.focus("cards", target)
+            else:
+                cols = self.zones["cards"]["columns"]
+                widgets = self.zones["cards"]["widgets"]
+                target = self.index + cols
+                if target < len(widgets):
+                    self.focus("cards", target)
+                elif widgets:
+                    self.focus("cards", len(widgets) - 1)
+
+    def _card_horizontal_neighbor(self, direction):
+        positions = getattr(self.root, "_cda_card_positions", [])
+        if not (0 <= self.index < len(positions)):
+            return None
+        row, col = positions[self.index]
+        target_col = col + direction
+        for i, (r, c) in enumerate(positions):
+            if r == row and c == target_col:
+                return i
+        return None
+
+    def _card_vertical_neighbor(self, direction):
+        positions = getattr(self.root, "_cda_card_positions", [])
+        if not (0 <= self.index < len(positions)):
+            return None
+        row, col = positions[self.index]
+        rows = sorted({r for r, _ in positions if (r < row if direction < 0 else r > row)}, reverse=direction < 0)
+        if not rows:
+            return None
+        target_row = rows[0]
+        candidates = [(abs(c - col), i) for i, (r, c) in enumerate(positions) if r == target_row]
+        return min(candidates)[1] if candidates else None
+
+    def _collection_mode(self):
+        return getattr(self.root, "_cda_view_mode", "search") in ("recent", "favorites")
+
+    def _section_left_index(self):
+        mode = getattr(self.root, "_cda_view_mode", "search")
+        if mode == "recent":
+            return 1
+        if mode == "favorites":
+            return 2
+        return 0
 
     def _selected_year_index(self):
         return getattr(self.root, "_cda_year_index", 0)

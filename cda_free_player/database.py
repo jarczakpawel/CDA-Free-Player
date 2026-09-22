@@ -2,7 +2,7 @@ import json
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 from .config import DB_FILE, CACHE_TTL
 
@@ -128,16 +128,21 @@ class Database:
     def favorites(self):
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,title,url,duration,image "
+                "SELECT id,title,url,duration,image,added_at "
                 "FROM favorites ORDER BY added_at DESC"
             ).fetchall()
 
-        return [self._item(row) for row in rows]
+        result = []
+        for row in rows:
+            item = self._item(row[:5])
+            item["section_label"] = self._day_label(row[5])
+            result.append(item)
+        return result
 
     def history(self):
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,title,url,duration,image,position,media_duration "
+                "SELECT id,title,url,duration,image,position,media_duration,last_watched "
                 "FROM history_v6 ORDER BY last_watched DESC LIMIT 100"
             ).fetchall()
 
@@ -146,9 +151,30 @@ class Database:
             item = self._item(row[:5])
             item["position"] = row[5] or 0
             item["media_duration"] = row[6] or 0
+            item["section_label"] = self._day_label(row[7])
             result.append(item)
 
         return result
+
+    @staticmethod
+    def _day_label(value):
+        if not value:
+            return ""
+        try:
+            day = datetime.fromisoformat(value).date()
+        except (TypeError, ValueError):
+            return ""
+        today = date.today()
+        delta = (today - day).days
+        if delta == 0:
+            return "Dzisiaj"
+        if delta == 1:
+            return "Wczoraj"
+        months = (
+            "stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
+            "lipca", "sierpnia", "września", "października", "listopada", "grudnia"
+        )
+        return f"{day.day} {months[day.month - 1]} {day.year}"
 
     def history_position(self, vid):
         with self.lock:

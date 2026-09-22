@@ -105,6 +105,8 @@ class App:
         self.items_by_id = {}
         self.card_buttons = []
         self.card_frames = []
+        self.card_positions = []
+        self.root._cda_card_positions = self.card_positions
         self.card_rating_views = {}
         self.card_footer_frames = {}
         self.photos = {}
@@ -118,6 +120,7 @@ class App:
         self.left_buttons = []
 
         self.last_search = None
+        self.browse_state = None
         self.detail_visible = False
         self.last_card_index = 0
         self.root._cda_last_card_index = 0
@@ -156,6 +159,7 @@ class App:
         )
         self.root._cda_sort_index = 0
         self.root._cda_duration_index = 0
+        self.root._cda_view_mode = "search"
 
         self.root.after(60, self.pump)
         if not __import__("os").environ.get("CDA_FREE_PLAYER_TEST_NO_AUTOSTART"):
@@ -235,18 +239,18 @@ class App:
         self.build_left_status()
         self.show_left_nav()
 
-        top = tk.Frame(
+        self.browse_controls = tk.Frame(
             self.main,
             bg=BG,
         )
-        top.pack(
+        self.browse_controls.pack(
             fill="x",
             padx=14,
             pady=(12, 6),
         )
 
         tk.Label(
-            top,
+            self.browse_controls,
             text="Rok",
             bg=BG,
             fg=MUTED,
@@ -254,7 +258,7 @@ class App:
         ).pack(anchor="w")
 
         year_wrap = tk.Frame(
-            top,
+            self.browse_controls,
             bg=BG,
         )
         year_wrap.pack(
@@ -324,7 +328,7 @@ class App:
             self.year_buttons[year] = button
 
         filters = tk.Frame(
-            top,
+            self.browse_controls,
             bg=BG,
         )
         filters.pack(fill="x")
@@ -411,18 +415,18 @@ class App:
             )
             self.duration_buttons[key] = button
 
-        header = tk.Frame(
+        self.header = tk.Frame(
             self.main,
             bg=BG,
         )
-        header.pack(
+        self.header.pack(
             fill="x",
             padx=14,
             pady=(4, 5),
         )
 
         self.results_title = tk.Label(
-            header,
+            self.header,
             text="",
             bg=BG,
             fg=TEXT,
@@ -431,7 +435,7 @@ class App:
         self.results_title.pack(side="left")
 
         self.remove_collection_button = tk.Button(
-            header,
+            self.header,
             text="",
             command=self.toggle_remove_mode,
             bg="#3a1c22", fg="#ff8b97", activebackground="#6b202b", activeforeground=TEXT,
@@ -440,7 +444,7 @@ class App:
         )
 
         self.count_label = tk.Label(
-            header,
+            self.header,
             text="",
             bg=BG,
             fg=MUTED,
@@ -547,6 +551,17 @@ class App:
             tk.Label(brand, image=self.brand_icon, bg=PANEL).pack(side="left", padx=(0,10))
         tk.Label(brand, text=APP_NAME, bg=PANEL, fg=TEXT, font=("Sans", 23, "bold")).pack(side="left")
 
+        browse = self.tv_button(
+            self.nav_panel,
+            "Przeglądaj",
+            lambda: self.show_browse(True),
+        )
+        browse.pack(
+            fill="x",
+            padx=12,
+            pady=4,
+        )
+
         recent = self.tv_button(
             self.nav_panel,
             "Ostatnio oglądane",
@@ -629,10 +644,15 @@ class App:
         )
 
         self.left_buttons = [
+            browse,
             recent,
             favorite,
             search_button,
         ]
+        self.browse_button = browse
+        self.recent_button = recent
+        self.favorite_button = favorite
+        self.search_button = search_button
 
 
     def create_grid_loading(self):
@@ -1170,11 +1190,17 @@ class App:
             self.detail_action_buttons,
             columns=1,
         )
+        self.controller.register(
+            "collection_action",
+            [self.remove_collection_button],
+            columns=1,
+        )
 
         self.bind_mouse_zone(
             "detail_actions",
             self.detail_action_buttons,
         )
+        self.bind_mouse_zone("collection_action", [self.remove_collection_button])
         self.bind_mouse_zone("left", self.left_buttons)
         self.bind_mouse_zone("search_entry", [self.search_entry])
         self.bind_mouse_zone("years", list(self.year_buttons.values()))
@@ -1321,6 +1347,7 @@ class App:
             "duration",
             "left",
             "search_entry",
+            "collection_action",
         ):
             self.show_left_nav()
 
@@ -1394,54 +1421,48 @@ class App:
             self.status.configure(text="Przygotowanie filmu przerwane")
             return
         if self.loading_page:
-            self.cancel_active_search(
-                "Backspace",
-                invalidate=True,
-            )
+            self.cancel_active_search("Backspace", invalidate=True)
 
         if self.controller.zone == "cards":
-                                                                   
             self.show_left_detail()
-            self.controller.focus(
-                "detail_actions",
-                0,
-            )
+            self.controller.focus("detail_actions", 0)
             return
 
         if self.controller.zone == "detail_actions":
-                                                                            
             self.show_left_nav()
-            self.controller.focus(
-                "left",
-                0,
-            )
+            self.controller.focus("left", self.section_left_index())
             return
 
-        if self.view_mode in (
-            "recent",
-            "favorites",
-        ) and self.last_search:
-            state = self.last_search
-            self.sort_key = state["sort"]
-            self.duration_key = state["duration"]
-            self.selected_year = state["year"]
-            self.paint_filters()
-            self.start_search(
-                state["query"],
-                state["label"],
-                state["year"],
-            )
-            self.controller.focus(
-                "years",
-                self.selected_year - 1950,
-            )
+        if self.controller.zone == "collection_action":
+            self.show_left_nav()
+            self.controller.focus("left", self.section_left_index())
+            return
+
+        if self.controller.zone == "left":
+            if self.view_mode in ("recent", "favorites"):
+                self.show_browse(False)
+                self.controller.focus("left", 0)
+            else:
+                self.confirm_close()
             return
 
         self.show_left_nav()
-        self.controller.focus(
-            "left",
-            0,
-        )
+        self.controller.focus("left", self.section_left_index())
+
+    def section_left_index(self):
+        if self.view_mode == "recent":
+            return 1
+        if self.view_mode == "favorites":
+            return 2
+        return 0
+
+    def confirm_close(self):
+        if messagebox.askyesno(
+            "Zamknąć aplikację?",
+            "Czy na pewno chcesz zamknąć CDA Free Player?",
+            parent=self.root,
+        ):
+            self.close(force=True)
 
 
     def paint_focus(
@@ -2077,6 +2098,7 @@ class App:
         self.items_by_id.clear()
         self.card_buttons.clear()
         self.card_frames.clear()
+        self.card_positions.clear()
         self.card_rating_views.clear()
         self.card_footer_frames.clear()
         self.photos.clear()
@@ -2100,6 +2122,71 @@ class App:
         self.result_canvas.yview_moveto(0)
         self.refresh_card_zone()
         self.show_left_nav()
+
+    def set_browse_controls_visible(self, visible):
+        if visible:
+            if not self.browse_controls.winfo_manager():
+                self.browse_controls.pack(
+                    fill="x", padx=14, pady=(12, 6), before=self.header
+                )
+        else:
+            self.browse_controls.pack_forget()
+
+    def capture_browse_state(self):
+        if self.view_mode != "search":
+            return
+        self.browse_state = {
+            "query": self.query,
+            "label": self.query_label,
+            "year": self.selected_year,
+            "sort": self.sort_key,
+            "duration": self.duration_key,
+            "next_page": self.next_page,
+            "exhausted": self.exhausted,
+            "initial_pages": self.initial_pages,
+            "empty_pages_skipped": self.empty_pages_skipped,
+            "items": [item.copy() for item in self.items],
+            "card_index": self.last_card_index,
+        }
+
+    def show_browse(self, focus_cards=False):
+        state = self.browse_state
+        if state is None:
+            if self.view_mode != "search":
+                self.start_search(self.query, self.query_label, self.selected_year)
+            if focus_cards and self.card_buttons:
+                self.controller.focus("cards", min(self.last_card_index, len(self.card_buttons) - 1))
+            return
+
+        self.search_cancel.set()
+        self.search_token += 1
+        self.search_cancel = threading.Event()
+        self.view_mode = "search"
+        self.root._cda_view_mode = "search"
+        self.set_remove_button(None)
+        self.set_browse_controls_visible(True)
+        self.query = state["query"]
+        self.query_label = state["label"]
+        self.selected_year = state["year"]
+        self.sort_key = state["sort"]
+        self.duration_key = state["duration"]
+        self.next_page = state["next_page"]
+        self.exhausted = state["exhausted"]
+        self.initial_pages = state["initial_pages"]
+        self.empty_pages_skipped = state["empty_pages_skipped"]
+        self.loading_page = False
+        self.clear_results()
+        self.results_title.configure(text=self.query_label)
+        self.add_items([item.copy() for item in state["items"]])
+        self.paint_filters()
+        self.last_card_index = max(0, min(state["card_index"], len(self.card_buttons) - 1)) if self.card_buttons else 0
+        self.root._cda_last_card_index = self.last_card_index
+        if not self.card_buttons and not self.exhausted:
+            self.load_next_page()
+        if focus_cards and self.card_buttons:
+            self.controller.focus("cards", self.last_card_index)
+        else:
+            self.show_left_nav()
 
     def save_last_search(self):
         if self.view_mode != "search":
@@ -2125,7 +2212,10 @@ class App:
             self.save_last_search()
 
         self.view_mode = "search"
+        self.root._cda_view_mode = "search"
+        self.browse_state = None
         self.set_remove_button(None)
+        self.set_browse_controls_visible(True)
         self.query = query
         self.query_label = label
 
@@ -2458,6 +2548,10 @@ class App:
             ))
 
     def add_items(self, videos):
+        sectioned = self.view_mode in ("recent", "favorites")
+        row_cursor = 0
+        col_cursor = 0
+        last_section = None
         for item in videos:
             if item["id"] in self.items_by_id:
                 continue
@@ -2470,8 +2564,34 @@ class App:
             index = len(self.items)
             self.items.append(item)
             self.items_by_id[item["id"]] = item
-            row = index // GRID_COLS
-            col = index % GRID_COLS
+            if sectioned:
+                section = item.get("section_label") or ""
+                if section and section != last_section:
+                    if col_cursor:
+                        row_cursor += 1
+                        col_cursor = 0
+                    tk.Label(
+                        self.grid_frame,
+                        text=section,
+                        bg=BG,
+                        fg=TEXT,
+                        font=("Sans", 12, "bold"),
+                        anchor="w",
+                    ).grid(
+                        row=row_cursor, column=0, columnspan=GRID_COLS,
+                        padx=7, pady=(12 if row_cursor else 4, 3), sticky="ew"
+                    )
+                    row_cursor += 1
+                    last_section = section
+                row = row_cursor
+                col = col_cursor
+                col_cursor += 1
+                if col_cursor >= GRID_COLS:
+                    col_cursor = 0
+                    row_cursor += 1
+            else:
+                row = index // GRID_COLS
+                col = index % GRID_COLS
 
             card = tk.Frame(
                 self.grid_frame,
@@ -2481,6 +2601,7 @@ class App:
                 bd=0,
             )
             card.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            self.card_positions.append((row, col))
 
             button_height = 148 if self.view_mode == "recent" else 158
             button = tk.Button(
@@ -3023,13 +3144,15 @@ class App:
     def show_recent(self):
         self.play_cancel.set()
         self.play_preparing = False
-        self.save_last_search()
+        self.capture_browse_state()
         self.cancel_active_search(
             "Ostatnio oglądane",
             invalidate=True,
         )
 
         self.view_mode = "recent"
+        self.root._cda_view_mode = "recent"
+        self.set_browse_controls_visible(False)
         self.set_remove_button("recent")
         self.clear_results()
 
@@ -3058,13 +3181,15 @@ class App:
     def show_favorites(self):
         self.play_cancel.set()
         self.play_preparing = False
-        self.save_last_search()
+        self.capture_browse_state()
         self.cancel_active_search(
             "Ulubione",
             invalidate=True,
         )
 
         self.view_mode = "favorites"
+        self.root._cda_view_mode = "favorites"
+        self.set_browse_controls_visible(False)
         self.set_remove_button("favorites")
         self.clear_results()
 
@@ -3163,7 +3288,10 @@ class App:
         finally:
             self.events.put(("play_prepared", cancel_event))
 
-    def close(self):
+    def close(self, force=False):
+        if not force:
+            self.confirm_close()
+            return
         self.closed = True
         self.search_cancel.set()
         self.play_cancel.set()

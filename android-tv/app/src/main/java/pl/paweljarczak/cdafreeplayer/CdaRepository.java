@@ -68,7 +68,7 @@ public final class CdaRepository {
 
     private VerificationObserver verificationObserver;
     private boolean playbackMode = false;
-    private SearchSession active, suspended;
+    private SearchSession active, suspended, pausedBrowse;
     private RequestToken playerToken;
     private volatile boolean closed;
     private final Set<RequestToken> requests = new HashSet<>();
@@ -92,8 +92,27 @@ public final class CdaRepository {
         }
     }
 
+    public void pauseBrowseSearch() {
+        SearchSession s = active;
+        if (s == null) return;
+        active = null;
+        s.token.cancel();
+        gateway.webSession().cancel(s.token);
+        SearchSession copy = new SearchSession();
+        copy.query = s.query; copy.sort = s.sort; copy.duration = s.duration; copy.key = s.key;
+        copy.page = s.page; copy.done = s.done; copy.listener = s.listener;
+        pausedBrowse = copy;
+    }
+
+    public void resumeBrowseSearch() {
+        if (closed || active != null || pausedBrowse == null) return;
+        active = pausedBrowse;
+        pausedBrowse = null;
+    }
+
     public void startSearch(String q, String sort, String duration, SearchListener listener) {
         cancelSearch();
+        pausedBrowse = null;
         SearchSession s = new SearchSession();
         s.query = q.trim();
         s.sort = sort;
@@ -415,6 +434,7 @@ public final class CdaRepository {
         closed = true;
         playbackMode = true;
         if (active != null) active.token.cancel();
+        if (pausedBrowse != null) pausedBrowse.token.cancel();
         for (RequestToken token : requests) token.cancel();
         requests.clear();
         main.removeCallbacksAndMessages(null);

@@ -118,7 +118,11 @@ public final class MainActivity extends Activity {
         grid.setHasFixedSize(true);
         grid.setItemViewCacheSize(cols * 3);
         adapter = new MovieAdapter(images, new MovieAdapter.Listener() {
-            @Override public void onFocus(Movie m, int p, View v) { lastCard = p; showMovie(m); }
+            @Override public void onFocus(Movie m, int p, View v) {
+                lastCard = p;
+                if (collectionMode == null) browseLastCard = p;
+                showMovie(m);
+            }
             @Override public void onClick(Movie m, int p) {
                 lastCard = p;
                 if (removeMode) removeFromCollection(m); else play(m);
@@ -291,7 +295,7 @@ public final class MainActivity extends Activity {
     }
 
     private void setupLeft() {
-        browse.setOnClickListener(v -> showBrowse());
+        browse.setOnClickListener(v -> showBrowse(true));
         recent.setOnClickListener(v -> showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"));
         favorites.setOnClickListener(v -> showCollection(repo.db().favorites(), "Ulubione", "favorites"));
         manualSearch.setOnClickListener(v -> manualSearch());
@@ -531,7 +535,7 @@ public final class MainActivity extends Activity {
             browseItems.clear(); browseItems.addAll(adapter.items()); browseTitle = resultsTitle.getText().toString(); browseLastCard = lastCard;
         }
         repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
-        repo.cancelSearch();
+        repo.pauseBrowseSearch();
         loadingBar.setVisibility(View.GONE);
         collectionMode = mode;
         removeMode = false;
@@ -545,17 +549,30 @@ public final class MainActivity extends Activity {
         if (!list.isEmpty()) grid.post(this::focusFirstCard);
     }
 
-    private void showBrowse() {
-        repo.cancelSearch();
+    private void showBrowse(boolean focusContent) {
         collectionMode = null; removeMode = false; adapter.setRemoveMode(false); adapter.setSectioned(false);
         removeCollection.setVisibility(View.GONE); yearFilterBar.setVisibility(View.VISIBLE);
         if (browseItems.isEmpty()) {
             startSearch(query, browseTitle);
+            if (focusContent) grid.postDelayed(this::focusFirstCard, 180);
             return;
         }
+        repo.resumeBrowseSearch();
         adapter.setItems(browseItems); resultsTitle.setText(browseTitle); resultCount.setText(adapter.getMovieCount() + " filmów");
         lastCard = Math.max(0, Math.min(browseLastCard, adapter.getItemCount() - 1));
         showNav();
+        if (focusContent) restoreBrowseCard();
+    }
+
+    private void restoreBrowseCard() {
+        int pos = adapter.isHeader(lastCard) ? adapter.firstMoviePosition() : lastCard;
+        if (pos == RecyclerView.NO_POSITION) return;
+        grid.scrollToPosition(pos);
+        grid.post(() -> {
+            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
+            if (vh != null) vh.itemView.requestFocus();
+            else focusFirstCard();
+        });
     }
 
     private Button sectionButton() {
@@ -790,7 +807,7 @@ public final class MainActivity extends Activity {
         if (f != null && isDescendant(detailPanel, f)) { focusSectionButton(); return; }
         if (f != null && (isDescendant(grid, f) || isDescendant(yearFilterBar, f) || f == removeCollection)) { focusSectionButton(); return; }
         if (f != null && isDescendant(navPanel, f)) {
-            if (collectionMode != null) { showBrowse(); browse.requestFocus(); return; }
+            if (collectionMode != null) { showBrowse(false); browse.requestFocus(); return; }
             showExitConfirmation();
             return;
         }
