@@ -147,14 +147,7 @@ class MovieInfoWindow:
             expand=True,
         )
 
-        score = (
-            self.metadata.get(
-                "rating"
-            )
-            or item.get(
-                "short_rating"
-            )
-        )
+        score = self.metadata.get("rating")
 
         self.score_box = tk.Frame(
             top,
@@ -230,25 +223,15 @@ class MovieInfoWindow:
                 text
             )
 
-        if sources:
-            tk.Label(
-                self.win,
-                text="   ".join(
-                    sources
-                ),
-                bg=BG,
-                fg=MUTED,
-                font=(
-                    "Sans",
-                    9,
-                    "bold",
-                ),
-                anchor="e",
-            ).pack(
-                fill="x",
-                padx=18,
-                pady=(6, 0),
-            )
+        self.sources_label = tk.Label(
+            self.win,
+            text="   ".join(sources),
+            bg=BG,
+            fg=MUTED,
+            font=("Sans", 9, "bold"),
+            anchor="e",
+        )
+        self.sources_label.pack(fill="x", padx=18, pady=(6, 0))
 
         actions = tk.Frame(
             self.win,
@@ -538,6 +521,38 @@ class MovieInfoWindow:
         self.body.yview_moveto(
             0
         )
+
+    def set_metadata(self, data):
+        if not data:
+            return
+        self.metadata.update(data)
+        score = self.metadata.get("rating")
+        normalized = normalize_rating(score)
+        if normalized is None:
+            self.stars.pack_forget()
+            self.score_label.pack_forget()
+        else:
+            self.stars.set_rating(normalized)
+            self.score_label.configure(text=self._score_text(normalized))
+            if not self.stars.winfo_ismapped():
+                self.stars.pack(anchor="e")
+            if not self.score_label.winfo_ismapped():
+                self.score_label.pack(anchor="e", pady=(3, 0))
+        sources = []
+        cda_votes = self.metadata.get("cda_votes")
+        if cda_votes is not None:
+            sources.append(f"CDA • {self._number(cda_votes)} ocen")
+        imdb = self.metadata.get("imdb_rating")
+        if imdb:
+            text = f"IMDb {imdb} / 10"
+            votes = self.metadata.get("imdb_votes")
+            if votes is not None:
+                text += f" • {self._number(votes)} głosów"
+            sources.append(text)
+        self.sources_label.configure(text="   ".join(sources))
+        count = self.metadata.get("comment_count")
+        if count is not None:
+            self.comments_btn.configure(text=self._comments_label(count))
 
     def show_description(self):
         self.body_mode = True

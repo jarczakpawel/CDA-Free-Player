@@ -163,6 +163,16 @@
                     android:textColor="@color/muted"
                     android:textSize="11sp"/>
 
+                <TextView
+                    android:id="@+id/detailRating"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="3dp"
+                    android:textColor="#FFD22E"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"/>
+
                 <LinearLayout
                     android:id="@+id/detailActions"
                     android:layout_width="match_parent"

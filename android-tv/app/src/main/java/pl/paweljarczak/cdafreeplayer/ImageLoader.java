@@ -90,6 +90,17 @@ public final class ImageLoader {
 
     public void trimForPlayback() { mem.evictAll(); }
 
+    public void clearCache() {
+        mem.evictAll();
+        pool.execute(() -> {
+            try {
+                File[] files = dir.listFiles();
+                if (files != null) for (File f : files) f.delete();
+                dir.mkdirs();
+            } catch (Exception ignored) {}
+        });
+    }
+
     private void pruneDisk() {
         try {
             File[] files = dir.listFiles();

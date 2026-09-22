@@ -12,10 +12,11 @@ from .updater import check_latest, open_update
 
 
 class SettingsWindow:
-    def __init__(self, root, db, on_data_changed=None):
+    def __init__(self, root, db, on_data_changed=None, on_cache_clear=None):
         self.root = root
         self.db = db
         self.on_data_changed = on_data_changed
+        self.on_cache_clear = on_cache_clear
         self.update_info = None
 
         self.win = tk.Toplevel(root)
@@ -35,6 +36,7 @@ class SettingsWindow:
         body.pack(fill="both", expand=True)
 
         self._section(body, "Dane lokalne")
+        self._danger_row(body, "Wyczyść cache", "Usuwa wyszukiwania, miniatury, opisy i komentarze. Ostatnio oglądane i Ulubione zostają.", self._clear_cache)
         self._danger_row(body, "Wyczyść historię oglądania", "Usuwa całą listę Ostatnio oglądane i zapisany postęp.", self.db.clear_history)
         self._danger_row(body, "Wyczyść ulubione", "Usuwa wszystkie zapisane ulubione filmy.", self.db.clear_favorites)
 
@@ -73,6 +75,11 @@ class SettingsWindow:
         tk.Label(left, text=title, bg=PANEL, fg=TEXT, font=("Sans", 10, "bold"), anchor="w").pack(fill="x")
         tk.Label(left, text=subtitle, bg=PANEL, fg=MUTED, font=("Sans", 8), anchor="w").pack(fill="x", pady=(3,0))
         self._button(frame, "Wyczyść", lambda: self._confirm_del(title, action)).pack(side="right", padx=(10,0))
+
+    def _clear_cache(self):
+        self.db.clear_cache()
+        if self.on_cache_clear:
+            self.on_cache_clear()
 
     def _confirm_del(self, title, action):
         dialog = tk.Toplevel(self.win)

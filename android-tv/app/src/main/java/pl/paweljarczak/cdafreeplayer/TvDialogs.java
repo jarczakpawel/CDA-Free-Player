@@ -13,6 +13,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.Locale;
 
 public final class TvDialogs {
     private static final int GOLD = Color.rgb(255, 210, 46);
@@ -54,6 +55,10 @@ public final class TvDialogs {
     }
 
     public static void text(Activity activity, String title, String body) {
+        text(activity, title, body, null);
+    }
+
+    public static void text(Activity activity, String title, String body, MovieMetadata metadata) {
         ScrollView sc = new ScrollView(activity);
         sc.setFillViewport(true);
         TextView text = new TextView(activity);
@@ -64,7 +69,7 @@ public final class TvDialogs {
         text.setPadding(28, 20, 28, 30);
         sc.addView(text);
         AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle(title)
+                .setTitle(withRating(title, metadata))
                 .setView(sc)
                 .setPositiveButton("Zamknij", null)
                 .create();
@@ -86,6 +91,10 @@ public final class TvDialogs {
     }
 
     public static void comments(Activity activity, ArrayList<CommentItem> list) {
+        comments(activity, list, null);
+    }
+
+    public static void comments(Activity activity, ArrayList<CommentItem> list, MovieMetadata metadata) {
         ScrollView sc = new ScrollView(activity);
         sc.setFillViewport(true);
         TextView text = new TextView(activity);
@@ -114,11 +123,18 @@ public final class TvDialogs {
         text.setText(b.length() == 0 ? "Brak komentarzy." : b);
         sc.addView(text);
         AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle("Komentarze (" + list.size() + ")")
+                .setTitle(withRating("Komentarze (" + list.size() + ")", metadata))
                 .setView(sc)
                 .setPositiveButton("Zamknij", null)
                 .create();
         installTvScroll(dialog, sc);
         dialog.show();
     }
+    private static String withRating(String title, MovieMetadata metadata) {
+        if (metadata == null || metadata.rating == null) return title;
+        String out = title + "   ★ " + String.format(Locale.US, "%.1f / 5", metadata.rating);
+        if (metadata.cdaVotes != null && metadata.cdaVotes > 0) out += " • " + metadata.cdaVotes + " ocen";
+        return out;
+    }
+
 }

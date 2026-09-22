@@ -33,6 +33,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
+import java.io.File;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Locale;
@@ -53,7 +54,7 @@ public final class MainActivity extends Activity {
     private View yearFilterBar;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
-    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailDescriptionPreview, voiceStatus;
+    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailRating, detailDescriptionPreview, voiceStatus;
     private ImageView detailThumb;
     private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
     private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection;
@@ -102,7 +103,7 @@ public final class MainActivity extends Activity {
         resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
         loadingBar = findViewById(R.id.loadingBar); loadingText = findViewById(R.id.loadingText);
         detailThumb = findViewById(R.id.detailThumb); detailTitle = findViewById(R.id.detailTitle);
-        detailTime = findViewById(R.id.detailTime);
+        detailTime = findViewById(R.id.detailTime); detailRating = findViewById(R.id.detailRating);
         detailFavorite = findViewById(R.id.detailFavorite); detailDescription = findViewById(R.id.detailDescription);
         detailComments = findViewById(R.id.detailComments); detailDescriptionPreview = findViewById(R.id.detailDescriptionPreview);
         browse = findViewById(R.id.browse); recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
@@ -300,7 +301,15 @@ public final class MainActivity extends Activity {
         favorites.setOnClickListener(v -> showCollection(repo.db().favorites(), "Ulubione", "favorites"));
         manualSearch.setOnClickListener(v -> manualSearch());
         voiceSearch.setOnClickListener(v -> startVoiceSearch());
-        settingsButton.setOnClickListener(v -> SettingsDialog.show(this, repo.db(), updater, this::refreshCurrentCollection));
+        settingsButton.setOnClickListener(v -> SettingsDialog.show(this, repo.db(), updater, this::refreshCurrentCollection, () -> {
+            repo.db().clearCache();
+            repo.clearTransientCaches();
+            for (Movie m : adapter.items()) { m.rating = null; m.ratingVotes = null; }
+            if (focused != null) { focused.rating = null; focused.ratingVotes = null; showMovie(focused); }
+            repo.gateway().webSession().clearCache();
+            clearAppCacheFiles();
+            images.clearCache();
+        }));
         removeCollection.setOnClickListener(v -> toggleRemoveMode());
         manualQuery.setOnEditorActionListener((v, action, event) -> {
             if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); return true; }
@@ -635,17 +644,27 @@ public final class MainActivity extends Activity {
         detailTitle.setText(m.title);
         images.load(m.imageUrl, detailThumb);
         detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
+        if (m.rating == null) {
+            detailRating.setText("");
+            detailRating.setVisibility(View.GONE);
+        } else {
+            String r = "★ " + String.format(Locale.US, "%.1f / 5", m.rating);
+            if (m.ratingVotes != null && m.ratingVotes > 0) r += " • " + m.ratingVotes + " ocen";
+            detailRating.setText(r);
+            detailRating.setVisibility(View.VISIBLE);
+        }
         detailDescriptionPreview.setText(m.shortDescription == null ? "" : m.shortDescription);
         updateDetailFavoriteIcon();
-        updateDetailCommentsDescription(null);
+        MovieMetadata known = repo == null ? null : repo.sessionMetadata(m.id);
+        updateDetailCommentsDescription(known == null ? null : known.commentCount);
     }
 
     private void loadDescription() {
         Movie m = focused;
         if (m == null) return;
-        MovieMetadata cached = repo.db().getMetadata(m.id);
+        MovieMetadata cached = repo.sessionMetadata(m.id);
         if (cached != null && cached.description != null && !cached.description.isEmpty()) {
-            TvDialogs.text(this, "Opis", cached.description);
+            TvDialogs.text(this, "Opis", cached.description, cached);
             return;
         }
         setStatus("Wczytywanie pełnego opisu…");
@@ -658,11 +677,10 @@ public final class MainActivity extends Activity {
                     if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
                     if (m.rating == null && md.rating != null) m.rating = md.rating;
                     if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
-                    adapter.notifyDataSetChanged();
                     if (focused == m) showMovie(m);
                 }
                 setStatus("Gotowe");
-                TvDialogs.text(MainActivity.this, "Opis", d);
+                TvDialogs.text(MainActivity.this, "Opis", d, md);
             }
             @Override public void onError(String e) {
                 setStatus("Błąd: " + e);
@@ -675,9 +693,14 @@ public final class MainActivity extends Activity {
         if (focused == null) return;
         setStatus("Wczytywanie komentarzy…");
         repo.loadComments(focused, new CdaRepository.CommentsListener() {
-            @Override public void onComments(ArrayList<CommentItem> comments) {
+            @Override public void onComments(ArrayList<CommentItem> comments, MovieMetadata md) {
+                if (md != null) {
+                    if (md.rating != null) focused.rating = md.rating;
+                    if (md.cdaVotes != null) focused.ratingVotes = md.cdaVotes;
+                }
+                if (focused != null) showMovie(focused);
                 updateDetailCommentsDescription(comments.size());
-                TvDialogs.comments(MainActivity.this, comments);
+                TvDialogs.comments(MainActivity.this, comments, md);
                 setStatus("Gotowe");
             }
             @Override public void onError(String e) {
@@ -710,7 +733,6 @@ public final class MainActivity extends Activity {
                     if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
                     if (m.rating == null && md.rating != null) m.rating = md.rating;
                     if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
-                    adapter.notifyDataSetChanged();
                 }
                 long resume = repo.db().resumePosition(m.id);
                 repo.enterPlaybackMode();
@@ -723,8 +745,8 @@ public final class MainActivity extends Activity {
                 i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
                 i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);
-                Double playerRating = md.rating != null ? md.rating : m.rating;
-                Integer playerVotes = md.cdaVotes != null ? md.cdaVotes : m.ratingVotes;
+                Double playerRating = md.rating;
+                Integer playerVotes = md.cdaVotes;
                 if (playerRating != null) i.putExtra("rating", playerRating);
                 if (playerVotes != null) i.putExtra("cdaVotes", playerVotes);
                 if (md.imdbRating != null && !md.imdbRating.isEmpty()) i.putExtra("imdbRating", md.imdbRating);
@@ -779,6 +801,22 @@ public final class MainActivity extends Activity {
         int l = v.getLeft(), rr = v.getRight(), vl = yearScroll.getScrollX(), vr = vl + yearScroll.getWidth(), margin = 12;
         if (l < vl + margin) yearScroll.smoothScrollTo(Math.max(0, l - margin), 0);
         else if (rr > vr - margin) yearScroll.smoothScrollTo(rr - yearScroll.getWidth() + margin, 0);
+    }
+
+    private void clearAppCacheFiles() {
+        File root = getCacheDir();
+        File[] files = root == null ? null : root.listFiles();
+        if (files == null) return;
+        for (File f : files) deleteRecursively(f);
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children != null) for (File child : children) deleteRecursively(child);
+        }
+        try { f.delete(); } catch (RuntimeException ignored) {}
     }
 
     private void setStatus(String text) { status.setText(text); }

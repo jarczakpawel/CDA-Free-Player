@@ -148,7 +148,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         m.title = MovieTitle.clean(m.title, m.duration);
         h.title.setText(m.title);
         h.duration.setText(m.duration);
-        h.rating.setRating(m.rating);
         images.load(m.imageUrl, h.image);
         bindLocal(h, m);
         bindListeners(h, m);
@@ -246,7 +245,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         final View root;
         final ImageView image;
         final TextView title, duration, favorite;
-        final StarRatingView rating;
         final ProgressBar progress;
 
         Holder(View v) {
@@ -255,7 +253,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             image = v.findViewById(R.id.cardImage);
             title = v.findViewById(R.id.cardTitle);
             duration = v.findViewById(R.id.cardDuration);
-            rating = v.findViewById(R.id.cardRating);
             favorite = v.findViewById(R.id.cardFavorite);
             progress = v.findViewById(R.id.cardProgress);
         }

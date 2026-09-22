@@ -27,7 +27,7 @@ public final class CdaRepository {
         void onVerification(boolean interactive);
     }
     public interface MetadataListener { void onMetadata(MovieMetadata md); void onError(String error); }
-    public interface CommentsListener { void onComments(ArrayList<CommentItem> comments); void onError(String error); }
+    public interface CommentsListener { void onComments(ArrayList<CommentItem> comments, MovieMetadata metadata); void onError(String error); }
     public interface PlayerListener { void onPlayer(PlayerData data, MovieMetadata metadata); void onError(String error); }
     public interface VerificationObserver { void onVerification(boolean interactive, boolean background); }
 
@@ -63,6 +63,18 @@ public final class CdaRepository {
             new LinkedHashMap<String, CachedPlayer>(16, .75f, true) {
                 @Override protected boolean removeEldestEntry(Map.Entry<String, CachedPlayer> e) {
                     return size() > PLAYER_CACHE_MAX;
+                }
+            };
+    private final LinkedHashMap<String, MovieMetadata> metadataCache =
+            new LinkedHashMap<String, MovieMetadata>(32, .75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, MovieMetadata> e) {
+                    return size() > 24;
+                }
+            };
+    private final LinkedHashMap<String, ArrayList<CommentItem>> commentsCache =
+            new LinkedHashMap<String, ArrayList<CommentItem>>(16, .75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, ArrayList<CommentItem>> e) {
+                    return size() > 12;
                 }
             };
 
@@ -138,7 +150,10 @@ public final class CdaRepository {
         parser.execute(() -> {
             if (closed || s.token.isCancelled()) return;
             SearchPage cached = db.getSearch(s.key, page);
-            if (cached != null) db.decorateLocalState(cached.movies);
+            if (cached != null) {
+                db.decorateLocalState(cached.movies);
+                logCatalogPage(page, "cache", null, cached);
+            }
             main.post(() -> {
                 if (closed || s != active || s.token.isCancelled()) return;
                 if (cached != null) handlePage(s, page, cached);
@@ -155,6 +170,7 @@ public final class CdaRepository {
                 parser.execute(() -> {
                     if (closed || s.token.isCancelled()) return;
                     SearchPage parsed = CdaParser.parseSearch(html);
+                    logCatalogPage(page, via ? "webview" : "http", html, parsed);
                     if (parsed.raw > 0 || !parsed.movies.isEmpty()) db.putSearch(s.key, page, parsed);
                     db.decorateLocalState(parsed.movies);
                     main.post(() -> handlePage(s, page, parsed));
@@ -192,6 +208,52 @@ public final class CdaRepository {
         s.listener.onPage(p.movies, page, p);
     }
 
+    private static void logCatalogPage(int page, String source, String html, SearchPage parsed) {
+        int ratings = 0, votes = 0, shorts = 0;
+        for (Movie m : parsed.movies) {
+            if (m.rating != null) ratings++;
+            if (m.ratingVotes != null) votes++;
+            if (m.shortDescription != null && !m.shortDescription.isEmpty()) shorts++;
+        }
+        String lower = html == null ? "" : html.toLowerCase(Locale.ROOT);
+        Log.i(TAG, "catalog parse page=" + page +
+                " via=" + source +
+                " bytes=" + (html == null ? 0 : html.length()) +
+                " raw=" + parsed.raw +
+                " free=" + parsed.movies.size() +
+                " ratings=" + ratings +
+                " votes=" + votes +
+                " short=" + shorts +
+                " markers=" + markerCount(lower, "ratingvalue") + "/" +
+                markerCount(lower, "data-rating") + "/" +
+                markerCount(lower, "data-rate") + "/" +
+                markerCount(lower, "aggregaterating") + "/" +
+                markerCount(lower, "ratemedval"));
+    }
+
+    private static void logMetadata(String id, String source, String html, MovieMetadata md) {
+        String lower = html == null ? "" : html.toLowerCase(Locale.ROOT);
+        Log.i(TAG, "metadata parse id=" + id +
+                " via=" + source +
+                " bytes=" + (html == null ? 0 : html.length()) +
+                " rating=" + md.rating +
+                " votes=" + md.cdaVotes +
+                " imdb=" + md.imdbRating +
+                " desc=" + (md.description == null ? 0 : md.description.length()) +
+                " markers=" + markerCount(lower, "ratingvalue") + "/" +
+                markerCount(lower, "data-rating") + "/" +
+                markerCount(lower, "data-rate") + "/" +
+                markerCount(lower, "aggregaterating") + "/" +
+                markerCount(lower, "ratemedval"));
+    }
+
+    private static int markerCount(String text, String needle) {
+        if (text == null || text.isEmpty() || needle == null || needle.isEmpty()) return 0;
+        int count = 0, from = 0;
+        while ((from = text.indexOf(needle, from)) >= 0) { count++; from += needle.length(); }
+        return count;
+    }
+
     private static String searchUrl(String q, String sort, String duration, int page) {
         String slug = q.trim().toLowerCase(Locale.ROOT).replaceAll("[\\/ ]+", "_");
         String base = "https://www.cda.pl/video/show/" + Uri.encode(slug, "_") + "/p" + Math.max(1, page);
@@ -199,7 +261,7 @@ public final class CdaRepository {
     }
 
     public RequestToken loadMetadata(Movie m, boolean allowWeb, MetadataListener listener) {
-        MovieMetadata cached = db.getMetadata(m.id);
+        MovieMetadata cached = sessionMetadata(m.id);
         if (cached != null && cached.description != null && !cached.description.isEmpty()) {
             listener.onMetadata(cached);
             return null;
@@ -211,8 +273,16 @@ public final class CdaRepository {
                 if (closed || token.isCancelled()) return;
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
-                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
-                    db.saveMetadata(m.id, md);
+                    MovieMetadata parsed = CdaParser.parseMetadata(html);
+                    ArrayList<CommentItem> comments = CdaParser.parseComments(html);
+                    logMetadata(m.id, via ? "webview" : "http", html, parsed);
+                    MovieMetadata md = mergeMetadata(parsed, sessionMetadata(m.id));
+                    Integer parsedCommentCount = md.commentCount;
+                    if (parsedCommentCount == null && !comments.isEmpty()) md.commentCount = comments.size();
+                    putSessionMetadata(m.id, md);
+                    if (!comments.isEmpty() || parsedCommentCount != null) {
+                        synchronized (commentsCache) { commentsCache.put(m.id, new ArrayList<>(comments)); }
+                    }
                     deliver(token, () -> listener.onMetadata(md));
                 });
             }
@@ -224,9 +294,11 @@ public final class CdaRepository {
     }
 
     public RequestToken loadComments(Movie m, CommentsListener listener) {
-        ArrayList<CommentItem> cached = db.getComments(m.id);
-        if (cached != null) {
-            listener.onComments(cached);
+        ArrayList<CommentItem> cached;
+        synchronized (commentsCache) { cached = commentsCache.get(m.id); }
+        MovieMetadata cachedMetadata = sessionMetadata(m.id);
+        if (cached != null && cachedMetadata != null) {
+            listener.onComments(new ArrayList<>(cached), cachedMetadata);
             return null;
         }
         RequestToken token = new RequestToken();
@@ -237,11 +309,12 @@ public final class CdaRepository {
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
                     ArrayList<CommentItem> comments = CdaParser.parseComments(html);
-                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
+                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), sessionMetadata(m.id));
+                    logMetadata(m.id, via ? "webview" : "http", html, md);
                     if (md.commentCount == null) md.commentCount = comments.size();
-                    db.saveComments(m.id, comments);
-                    db.saveMetadata(m.id, md);
-                    deliver(token, () -> listener.onComments(comments));
+                    putSessionMetadata(m.id, md);
+                    synchronized (commentsCache) { commentsCache.put(m.id, new ArrayList<>(comments)); }
+                    deliver(token, () -> listener.onComments(comments, md));
                 });
             }
             @Override public void onError(String e) { deliver(token, () -> listener.onError(e)); }
@@ -266,7 +339,8 @@ public final class CdaRepository {
         CachedPlayer hit = getCachedPlayer(m.id);
         if (hit != null && validPlayer(hit.data)) {
             Log.i(TAG, "player cache hit id=" + m.id);
-            listener.onPlayer(hit.data, hit.metadata);
+            MovieMetadata md = mergeMetadata(hit.metadata, sessionMetadata(m.id));
+            listener.onPlayer(hit.data, md);
             return;
         }
         RequestToken token = new RequestToken();
@@ -313,11 +387,10 @@ public final class CdaRepository {
                         return;
                     }
 
-                    MovieMetadata md = mergeMetadata(CdaParser.parseMetadata(html), db.getMetadata(m.id));
-                    if (md.description == null || md.description.isEmpty()) md.description = m.shortDescription == null ? "" : m.shortDescription;
-                    if (md.rating == null) md.rating = m.rating;
-                    if (md.cdaVotes == null) md.cdaVotes = m.ratingVotes;
-                    db.saveMetadata(m.id, md);
+                    MovieMetadata md = new MovieMetadata();
+                    md.description = m.shortDescription == null ? "" : m.shortDescription;
+                    MovieMetadata explicit = sessionMetadata(m.id);
+                    if (explicit != null) md = mergeMetadata(md, explicit);
                     PlayerData ready = resolved;
                     cachePlayer(m.id, ready, md);
                     deliver(token, () -> { playerToken = null; listener.onPlayer(ready, md); });
@@ -404,6 +477,21 @@ public final class CdaRepository {
             return null;
         }
         return c;
+    }
+
+    public MovieMetadata sessionMetadata(String id) {
+        synchronized (metadataCache) { return metadataCache.get(id); }
+    }
+
+    private void putSessionMetadata(String id, MovieMetadata metadata) {
+        if (id == null || metadata == null) return;
+        synchronized (metadataCache) { metadataCache.put(id, metadata); }
+    }
+
+    public void clearTransientCaches() {
+        synchronized (metadataCache) { metadataCache.clear(); }
+        synchronized (commentsCache) { commentsCache.clear(); }
+        synchronized (playerCache) { playerCache.clear(); }
     }
 
     private static MovieMetadata mergeMetadata(MovieMetadata fresh, MovieMetadata old) {

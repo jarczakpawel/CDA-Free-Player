@@ -19,7 +19,7 @@ import java.util.Date;
 import java.util.Locale;
 
 public final class CdaDb extends SQLiteOpenHelper {
-    private static final int VER = 5;
+    private static final int VER = 7;
     private static final long CACHE_MS = 6L * 60 * 60 * 1000;
 
     public CdaDb(Context c) {
@@ -43,6 +43,15 @@ public final class CdaDb extends SQLiteOpenHelper {
         if (oldVersion < 3) db.delete("comments", null, null);
         if (oldVersion < 4) db.delete("search_cache", null, null);
         if (oldVersion < 5) db.delete("search_cache", null, null);
+        if (oldVersion < 6) {
+            db.delete("search_cache", null, null);
+            db.delete("metadata", "rating IS NULL", null);
+        }
+        if (oldVersion < 7) {
+            db.delete("search_cache", null, null);
+            db.delete("metadata", null, null);
+            db.delete("comments", null, null);
+        }
     }
 
     public synchronized void removeHistory(String id) {
@@ -188,15 +197,14 @@ public final class CdaDb extends SQLiteOpenHelper {
             }
         }
 
-        try (Cursor c = db.rawQuery("SELECT id,description,rating,cda_votes FROM metadata WHERE id IN (" + in + ") AND (description<>'' OR rating IS NOT NULL OR cda_votes IS NOT NULL)", args)) {
-            while (c.moveToNext()) {
-                Movie m = byId.get(c.getString(0));
-                if (m == null) continue;
-                if ((m.shortDescription == null || m.shortDescription.isEmpty()) && !c.isNull(1)) m.shortDescription = c.getString(1);
-                if (m.rating == null && !c.isNull(2)) m.rating = c.getDouble(2);
-                if (m.ratingVotes == null && !c.isNull(3)) m.ratingVotes = c.getInt(3);
-            }
-        }
+    }
+
+    public synchronized void clearCache() {
+        SQLiteDatabase db = getWritableDatabase();
+        db.delete("search_cache", null, null);
+        db.delete("metadata", null, null);
+        db.delete("comments", null, null);
+        db.execSQL("VACUUM");
     }
 
     private static String dayLabel(long time) {
@@ -311,7 +319,11 @@ public final class CdaDb extends SQLiteOpenHelper {
             v.put("page", page);
             v.put("json", root.toString());
             v.put("created", System.currentTimeMillis());
-            getWritableDatabase().insertWithOnConflict("search_cache", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+            SQLiteDatabase db = getWritableDatabase();
+            long cutoff = System.currentTimeMillis() - CACHE_MS;
+            db.delete("search_cache", "created<?", new String[]{String.valueOf(cutoff)});
+            db.insertWithOnConflict("search_cache", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+            db.execSQL("DELETE FROM search_cache WHERE rowid NOT IN (SELECT rowid FROM search_cache ORDER BY created DESC LIMIT 80)");
         } catch (Exception ignored) {}
     }
 

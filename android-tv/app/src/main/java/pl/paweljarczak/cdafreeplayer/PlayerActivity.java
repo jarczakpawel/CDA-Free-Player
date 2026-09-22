@@ -343,10 +343,15 @@ public final class PlayerActivity extends Activity {
 
 
     private void loadDescription() {
-        MovieMetadata cached = db.getMetadata(movie.id);
+        if (metadata.rating != null && metadata.description != null && !metadata.description.isEmpty()) {
+            TvDialogs.text(this, "Opis", metadata.description, metadata);
+            resetHide();
+            return;
+        }
+        MovieMetadata cached = repo.sessionMetadata(movie.id);
         if (cached != null && cached.description != null && !cached.description.isEmpty()) {
             applyMetadata(cached);
-            TvDialogs.text(this, "Opis", metadata.description);
+            TvDialogs.text(this, "Opis", metadata.description, metadata);
             resetHide();
             return;
         }
@@ -357,7 +362,7 @@ public final class PlayerActivity extends Activity {
                 applyMetadata(md);
                 description.setContentDescription("Opis");
                 endContentLoad();
-                TvDialogs.text(PlayerActivity.this, "Opis", metadata.description);
+                TvDialogs.text(PlayerActivity.this, "Opis", metadata.description, metadata);
                 resetHide();
             }
             @Override public void onError(String e) {
@@ -373,12 +378,11 @@ public final class PlayerActivity extends Activity {
         beginContentLoad("Wczytywanie komentarzy…", comments);
         comments.setContentDescription("Komentarze — wczytywanie");
         contentToken = repo.loadComments(movie, new CdaRepository.CommentsListener() {
-            @Override public void onComments(ArrayList<CommentItem> c) {
-                MovieMetadata md = db.getMetadata(movie.id);
+            @Override public void onComments(ArrayList<CommentItem> c, MovieMetadata md) {
                 applyMetadata(md);
                 updateCommentsDescription(c.size());
                 endContentLoad();
-                TvDialogs.comments(PlayerActivity.this, c);
+                TvDialogs.comments(PlayerActivity.this, c, metadata);
                 resetHide();
             }
             @Override public void onError(String e) {

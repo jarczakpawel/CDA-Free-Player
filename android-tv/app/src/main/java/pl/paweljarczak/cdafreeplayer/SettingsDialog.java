@@ -19,7 +19,7 @@ public final class SettingsDialog {
 
     private SettingsDialog() { }
 
-    public static void show(Activity a, CdaDb db, UpdateManager updater, Listener listener) {
+    public static void show(Activity a, CdaDb db, UpdateManager updater, Listener listener, Runnable clearCacheAction) {
         LinearLayout box = new LinearLayout(a);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(a, 22), dp(a, 12), dp(a, 22), dp(a, 16));
@@ -46,6 +46,14 @@ public final class SettingsDialog {
         Button update = button(a, "Sprawdź / zainstaluj aktualizację");
         update.setEnabled(false);
         box.addView(update);
+
+        Button clearCache = button(a, "Wyczyść cache");
+        clearCache.setOnClickListener(v -> confirmDel(a, "Wyczyść cache", () -> {
+            if (clearCacheAction != null) clearCacheAction.run();
+            else db.clearCache();
+            listener.onDataChanged();
+        }));
+        box.addView(clearCache);
 
         Button clearHistory = button(a, "Wyczyść historię oglądania");
         clearHistory.setOnClickListener(v -> confirmDel(a, "Wyczyść historię oglądania", () -> {

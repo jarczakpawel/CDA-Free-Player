@@ -87,6 +87,9 @@ class Database:
             )
         """)
 
+        self.db.execute("DELETE FROM metadata_v6")
+        self.db.execute("DELETE FROM comments_v15")
+        self.db.execute("DELETE FROM search_pages_v13 WHERE fetched_at<?", (time.time() - CACHE_TTL,))
         self.db.commit()
 
     def is_favorite(self, vid):
@@ -326,6 +329,8 @@ class Database:
         items,
     ):
         with self.lock:
+            now = time.time()
+            self.db.execute("DELETE FROM search_pages_v13 WHERE fetched_at<?", (now - CACHE_TTL,))
             self.db.execute(
                 "INSERT OR REPLACE INTO search_pages_v13 VALUES(?,?,?,?,?,?)",
                 (
@@ -334,9 +339,15 @@ class Database:
                     duration_key,
                     page,
                     json.dumps(items, ensure_ascii=False),
-                    time.time(),
+                    now,
                 ),
             )
+            self.db.execute("""
+                DELETE FROM search_pages_v13
+                WHERE rowid NOT IN (
+                    SELECT rowid FROM search_pages_v13 ORDER BY fetched_at DESC LIMIT 80
+                )
+            """)
             self.db.commit()
 
     def comments(self, vid, max_age=21600):
@@ -380,6 +391,14 @@ class Database:
         with self.lock:
             self.db.execute("DELETE FROM favorites")
             self.db.commit()
+
+    def clear_cache(self):
+        with self.lock:
+            self.db.execute("DELETE FROM search_pages_v13")
+            self.db.execute("DELETE FROM metadata_v6")
+            self.db.execute("DELETE FROM comments_v15")
+            self.db.commit()
+            self.db.execute("VACUUM")
 
     @staticmethod
     def _item(row):

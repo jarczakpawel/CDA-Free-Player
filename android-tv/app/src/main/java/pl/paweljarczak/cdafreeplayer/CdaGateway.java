@@ -3,6 +3,7 @@ package pl.paweljarczak.cdafreeplayer;
 import android.app.Activity;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.widget.FrameLayout;
 
 import java.util.ArrayList;
@@ -21,6 +22,7 @@ public final class CdaGateway {
         void onVerification(boolean interactive);
     }
 
+    private static final String TAG = "CDAFP";
     private final ExecutorService net = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "cda-net");
         t.setPriority(Thread.NORM_PRIORITY - 1);
@@ -40,68 +42,71 @@ public final class CdaGateway {
     public CdaWebSession webSession() { return web; }
 
     public void fetch(String url, boolean allowWeb, RequestToken token, Callback cb) {
-        if (closed || token != null && token.isCancelled()) return;
-        if (allowWeb && (!web.isFullSitePrepared() || !http.hasSession(url))) {
-            fetchWeb(url, token, cb);
-            return;
-        }
-
-        net.execute(() -> {
-            try {
-                CdaHttp.Result result = http.get(url, token);
-                if (token != null && token.isCancelled()) return;
-                if (!result.challenge) {
-                    post(token, () -> cb.onHtml(result.body, false));
-                    return;
-                }
-                if (!allowWeb) {
-                    post(token, cb::onChallengeRequired);
-                    return;
-                }
-                post(token, () -> fetchWeb(url, token, cb));
-            } catch (InterruptedException ignored) {
-            } catch (Exception e) {
-                post(token, () -> cb.onError(e.toString()));
-            }
-        });
+        fetchHttp(url, false, allowWeb, token, cb);
     }
 
     public void fetchCatalog(String url, RequestToken token, Callback cb) {
-        if (closed || token != null && token.isCancelled()) return;
-        if (!web.isFullSitePrepared() || !http.hasSession(url)) {
-            fetchWeb(url, token, new Callback() {
-                @Override public void onHtml(String fallbackHtml, boolean viaWebView) {
-                    fetchCatalogHttp(url, token, cb, fallbackHtml);
-                }
-                @Override public void onError(String error) { cb.onError(error); }
-                @Override public void onChallengeRequired() { cb.onChallengeRequired(); }
-                @Override public void onVerification(boolean interactive) { cb.onVerification(interactive); }
-            });
-            return;
-        }
-        fetchCatalogHttp(url, token, cb, null);
+        fetchHttp(url, true, true, token, cb);
     }
 
-    private void fetchCatalogHttp(String url, RequestToken token, Callback cb, String fallbackHtml) {
+    private void fetchHttp(String url, boolean catalog, boolean allowWeb, RequestToken token, Callback cb) {
+        if (closed || token != null && token.isCancelled()) return;
         net.execute(() -> {
             try {
-                CdaHttp.Result result = http.getCatalog(url, token);
+                CdaHttp.Result result = catalog ? http.getCatalog(url, token) : http.get(url, token);
                 if (token != null && token.isCancelled()) return;
-                if (!result.challenge) {
-                    post(token, () -> cb.onHtml(result.body, false));
+                logHttp(catalog ? "catalog" : "page", result, url);
+
+                if (result.challenge) {
+                    if (!allowWeb) {
+                        post(token, cb::onChallengeRequired);
+                        return;
+                    }
+                    Log.i(TAG, "HTTP challenge -> WebView; clearance=" + http.hasClearance());
+                    post(token, () -> fetchWeb(url, token, cb));
                     return;
                 }
-                if (fallbackHtml != null && !fallbackHtml.isEmpty()) {
-                    post(token, () -> cb.onHtml(fallbackHtml, true));
+
+                if (allowWeb && http.isMobileResult(result)) {
+                    Log.i(TAG, "mobile CDA response -> preparing full-site session over HTTP");
+                    CdaHttp.Result prep = http.prepareFullSite(token);
+                    if (token != null && token.isCancelled()) return;
+                    logHttp("fullsite", prep, "https://m.cda.pl/gofullcda");
+                    if (!prep.challenge) {
+                        CdaHttp.Result retry = catalog ? http.getCatalog(url, token) : http.get(url, token);
+                        if (token != null && token.isCancelled()) return;
+                        logHttp((catalog ? "catalog" : "page") + " retry", retry, url);
+                        if (!retry.challenge && !http.isMobileResult(retry)) {
+                            web.markFullSitePrepared();
+                            post(token, () -> cb.onHtml(retry.body, false));
+                            return;
+                        }
+                    }
+                    Log.i(TAG, "full-site HTTP path needs WebView; clearance=" + http.hasClearance());
+                    post(token, () -> fetchWeb(url, token, cb));
                     return;
                 }
-                post(token, () -> fetchWeb(url, token, cb));
+
+                if (!http.isMobileResult(result)) web.markFullSitePrepared();
+                post(token, () -> cb.onHtml(result.body, false));
             } catch (InterruptedException ignored) {
             } catch (Exception e) {
-                if (fallbackHtml != null && !fallbackHtml.isEmpty()) post(token, () -> cb.onHtml(fallbackHtml, true));
-                else post(token, () -> fetchWeb(url, token, cb));
+                Log.w(TAG, (catalog ? "catalog" : "page") + " HTTP failed url=" + safeUrl(url) +
+                        " error=" + e.getClass().getSimpleName());
+                if (allowWeb) post(token, () -> fetchWeb(url, token, cb));
+                else post(token, () -> cb.onError(e.toString()));
             }
         });
+    }
+
+    private static void logHttp(String kind, CdaHttp.Result result, String url) {
+        Log.i(TAG, kind + " http status=" + result.status +
+                " bytes=" + (result.body == null ? 0 : result.body.length()) +
+                " challenge=" + result.challenge +
+                " mobile=" + (result.finalUrl != null && result.finalUrl.startsWith("https://m.cda.pl/")) +
+                " ms=" + result.elapsedMs +
+                " final=" + safeUrl(result.finalUrl) +
+                " requested=" + safeUrl(url));
     }
 
     public void fetchWeb(String url, RequestToken token, Callback cb) {
@@ -166,5 +171,11 @@ public final class CdaGateway {
         main.removeCallbacksAndMessages(null);
         net.shutdownNow();
         web.destroy();
+    }
+
+    private static String safeUrl(String url) {
+        if (url == null) return "";
+        int q = url.indexOf('?');
+        return q >= 0 ? url.substring(0, q) : url;
     }
 }

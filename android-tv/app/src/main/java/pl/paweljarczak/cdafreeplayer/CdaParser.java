@@ -81,8 +81,6 @@ public final class CdaParser {
         m.title = MovieTitle.clean(title, m.duration);
         m.imageUrl = imageFromTile(tile);
         m.shortDescription = tooltip(tile);
-        m.rating = ratingFromTile(tile);
-        m.ratingVotes = votesFromTile(tile);
         page.movies.add(m);
     }
 
@@ -131,6 +129,22 @@ public final class CdaParser {
             if (videoLinks > 0 && videoLinks <= 3 && !cur.select("img").isEmpty()) fallback = cur;
         }
         return fallback;
+    }
+
+    private static Element singleVideoAncestor(Element tile, String id) {
+        Element best = null;
+        Element cur = tile == null ? null : tile.parent();
+        for (int depth = 0; cur != null && depth < 4; depth++, cur = cur.parent()) {
+            HashSet<String> ids = new HashSet<>();
+            for (Element a : cur.select("a[href]")) {
+                Matcher m = VIDEO_ID.matcher(normalizeHref(a.attr("href")));
+                if (m.find() && validVideoId(m.group(1))) ids.add(m.group(1));
+                if (ids.size() > 1) break;
+            }
+            if (ids.size() == 1 && ids.contains(id)) best = cur;
+            else if (ids.size() > 1) break;
+        }
+        return best;
     }
 
     private static String candidateTitle(Element a, Element tile) {
@@ -217,19 +231,25 @@ public final class CdaParser {
         for (String sel : new String[]{"[itemprop=ratingValue]", "[data-rating]", "[data-rate]", ".rating", ".rate", ".rateMedVal", ".rating-value"}) {
             Element e = tile.selectFirst(sel);
             if (e == null) continue;
-            String v = e.hasAttr("content") ? e.attr("content") : e.hasAttr("data-rating") ? e.attr("data-rating") : e.hasAttr("data-rate") ? e.attr("data-rate") : e.text();
-            Matcher m = RATING.matcher(v);
-            if (m.find()) {
-                double d = parseDouble(m.group(1));
-                if (d >= 0 && d <= 5) return d;
+            Double value = parseRatingValue(firstNonEmpty(e.attr("content"), e.attr("data-rating"), e.attr("data-rate"), e.attr("value"), e.text()));
+            if (value != null) return value;
+        }
+        for (Element e : tile.getAllElements()) {
+            for (String attr : new String[]{"aria-label", "title"}) {
+                if (!e.hasAttr(attr)) continue;
+                String v = e.attr(attr);
+                if (!Pattern.compile("(?i)\\b(?:ocena|rating|rate)\\b").matcher(v).find()) continue;
+                Double value = parseRatingValue(v);
+                if (value != null) return value;
             }
         }
-        Matcher m = Pattern.compile("(?i)(?:ocena|rating|rate)\\s*:?\\s*([0-5](?:[.,]\\d{1,2})?)|(?<!\\d)([0-5](?:[.,]\\d{1,2})?)\\s*/\\s*5").matcher(tile.text());
-        if (m.find()) {
-            String s = m.group(1) != null ? m.group(1) : m.group(2);
-            double d = parseDouble(s);
-            if (d >= 0 && d <= 5) return d;
+        Matcher raw = Pattern.compile("(?is)(?:data-rating|data-rate|ratingValue|[\\\"']rating[\\\"'])\\s*(?:=|:)\\s*[\\\"']?([0-5](?:[.,]\\d{1,2})?)").matcher(tile.outerHtml());
+        if (raw.find()) {
+            Double value = parseRatingValue(raw.group(1));
+            if (value != null) return value;
         }
+        Matcher m = Pattern.compile("(?i)(?:ocena|rating|rate)\\s*:?\\s*([0-5](?:[.,]\\d{1,2})?)|(?<!\\d)([0-5](?:[.,]\\d{1,2})?)\\s*/\\s*5").matcher(tile.text());
+        if (m.find()) return parseRatingValue(m.group(1) != null ? m.group(1) : m.group(2));
         return null;
     }
 
@@ -238,21 +258,90 @@ public final class CdaParser {
         for (String sel : new String[]{"[itemprop=ratingCount]", "[itemprop=reviewCount]", "[data-votes]", "[data-vote-count]", "[data-rating-count]", ".rating-count", ".rateCount", ".votes"}) {
             Element e = tile.selectFirst(sel);
             if (e == null) continue;
-            String v = e.hasAttr("content") ? e.attr("content") : e.hasAttr("data-votes") ? e.attr("data-votes") : e.hasAttr("data-vote-count") ? e.attr("data-vote-count") : e.hasAttr("data-rating-count") ? e.attr("data-rating-count") : e.text();
+            String v = firstNonEmpty(e.attr("content"), e.attr("data-votes"), e.attr("data-vote-count"), e.attr("data-rating-count"), e.text());
             Integer n = parseInt(v);
             if (n != null && n >= 0) return n;
         }
+        Matcher raw = Pattern.compile("(?is)(?:ratingCount|reviewCount|data-votes|data-vote-count|data-rating-count|[\\\"']votes[\\\"'])\\s*(?:=|:)\\s*[\\\"']?(\\d+(?:[ .]\\d{3})*)").matcher(tile.outerHtml());
+        if (raw.find()) return parseInt(raw.group(1));
         Matcher m = Pattern.compile("(?i)(?:ocen(?:y)?|głos(?:y|ów)?|votes?)\\s*[:(]?\\s*(\\d+(?:[ .]\\d{3})*)|(\\d+(?:[ .]\\d{3})*)\\s*(?:ocen(?:y)?|głos(?:y|ów)?|votes?)").matcher(tile.text());
         if (m.find()) return parseInt(m.group(1) != null ? m.group(1) : m.group(2));
         return null;
     }
 
-    public static MovieMetadata parseMetadata(String html){
-        MovieMetadata md=new MovieMetadata(); Document doc=Jsoup.parse(html); Element d=doc.selectFirst("[itemprop=description]"); if(d==null)d=doc.selectFirst("meta[itemprop=description][content]"); if(d==null)d=doc.selectFirst("meta[property=og:description][content]"); if(d!=null)md.description=clean(d.tagName().equals("meta")?d.attr("content"):d.html());
-        String plain=doc.text().replaceAll("\\s+"," "); Matcher c=CDA_FULL.matcher(plain); if(c.find()){md.rating=parseDouble(c.group(1));md.cdaVotes=parseInt(c.group(2));}
-        Matcher im=IMDB.matcher(plain); if(im.find()){md.imdbRating=String.format(Locale.US,"%.1f",parseDouble(im.group(1)));md.imdbVotes=parseInt(im.group(2));}
-        for(String sel:new String[]{"[data-comments-count]",".comments-count","#comments-count"}){Element e=doc.selectFirst(sel);if(e!=null){Integer x=parseInt(e.hasAttr("data-comments-count")?e.attr("data-comments-count"):e.text());if(x!=null){md.commentCount=x;break;}}}
-        if(md.commentCount==null){Element box=doc.selectFirst(".comments-container");if(box==null)box=doc.selectFirst("#cdaComments");if(box!=null){HashSet<String> ids=new HashSet<>();int n=0;for(Element e:box.select(".komentarz.comment,.komentarz,div.comment[id]")){String key=e.id().isEmpty()?e.cssSelector():e.id();if(ids.add(key))n++;}md.commentCount=n;}}
+    private static Double parseRatingValue(String value) {
+        if (value == null || value.trim().isEmpty()) return null;
+        Matcher m = RATING.matcher(value);
+        if (!m.find()) return null;
+        double d = parseDouble(m.group(1));
+        return d >= 0 && d <= 5 ? d : null;
+    }
+
+    public static MovieMetadata parseMetadata(String html) {
+        MovieMetadata md = new MovieMetadata();
+        Document doc = Jsoup.parse(html == null ? "" : html);
+        Element d = doc.selectFirst("[itemprop=description]");
+        if (d == null) d = doc.selectFirst("meta[itemprop=description][content]");
+        if (d == null) d = doc.selectFirst("meta[property=og:description][content]");
+        if (d != null) md.description = clean(d.tagName().equals("meta") ? d.attr("content") : d.html());
+
+        String plain = doc.text().replaceAll("\\s+", " ");
+        Matcher c = CDA_FULL.matcher(plain);
+        if (c.find()) {
+            md.rating = parseRatingValue(c.group(1));
+            md.cdaVotes = parseInt(c.group(2));
+        }
+
+        if (md.rating == null) {
+            for (String sel : new String[]{"meta[itemprop=ratingValue][content]", "[itemprop=aggregateRating] [itemprop=ratingValue]", "[itemprop=ratingValue]", "[data-rating]", "[data-rate]", "span.rating", ".rateMedVal", ".rating-value"}) {
+                Element e = doc.selectFirst(sel);
+                if (e == null) continue;
+                Double value = parseRatingValue(firstNonEmpty(e.attr("content"), e.attr("data-rating"), e.attr("data-rate"), e.text()));
+                if (value != null) { md.rating = value; break; }
+            }
+        }
+        if (md.rating == null) {
+            Matcher raw = Pattern.compile("(?is)[\\\"'](?:ratingValue|rating)[\\\"']\\s*:\\s*[\\\"']?([0-5](?:[.,]\\d{1,2})?)").matcher(html == null ? "" : html);
+            if (raw.find()) md.rating = parseRatingValue(raw.group(1));
+        }
+
+        if (md.cdaVotes == null) {
+            for (String sel : new String[]{"meta[itemprop=ratingCount][content]", "meta[itemprop=reviewCount][content]", "[itemprop=aggregateRating] [itemprop=ratingCount]", "[itemprop=aggregateRating] [itemprop=reviewCount]", "[itemprop=ratingCount]", "[itemprop=reviewCount]", "[data-votes]", "[data-vote-count]", "[data-rating-count]", ".rating-count", ".rateCount", ".votes"}) {
+                Element e = doc.selectFirst(sel);
+                if (e == null) continue;
+                Integer value = parseInt(firstNonEmpty(e.attr("content"), e.attr("data-votes"), e.attr("data-vote-count"), e.attr("data-rating-count"), e.text()));
+                if (value != null && value >= 0) { md.cdaVotes = value; break; }
+            }
+        }
+        if (md.cdaVotes == null) {
+            Matcher raw = Pattern.compile("(?is)[\\\"'](?:ratingCount|reviewCount|cdaVotes|votes)[\\\"']\\s*:\\s*[\\\"']?(\\d+(?:[ .]\\d{3})*)").matcher(html == null ? "" : html);
+            if (raw.find()) md.cdaVotes = parseInt(raw.group(1));
+        }
+
+        Matcher im = IMDB.matcher(plain);
+        if (im.find()) {
+            md.imdbRating = String.format(Locale.US, "%.1f", parseDouble(im.group(1)));
+            md.imdbVotes = parseInt(im.group(2));
+        }
+        for (String sel : new String[]{"[data-comments-count]", ".comments-count", "#comments-count"}) {
+            Element e = doc.selectFirst(sel);
+            if (e != null) {
+                Integer x = parseInt(e.hasAttr("data-comments-count") ? e.attr("data-comments-count") : e.text());
+                if (x != null) { md.commentCount = x; break; }
+            }
+        }
+        if (md.commentCount == null) {
+            Element box = doc.selectFirst(".comments-container");
+            if (box == null) box = doc.selectFirst("#cdaComments");
+            if (box != null) {
+                HashSet<String> ids = new HashSet<>(); int n = 0;
+                for (Element e : box.select(".komentarz.comment,.komentarz,div.comment[id]")) {
+                    String key = e.id().isEmpty() ? e.cssSelector() : e.id();
+                    if (ids.add(key)) n++;
+                }
+                md.commentCount = n;
+            }
+        }
         return md;
     }
 

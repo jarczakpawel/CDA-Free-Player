@@ -1,6 +1,7 @@
 package pl.paweljarczak.cdafreeplayer;
 
 import android.content.Context;
+import android.os.SystemClock;
 import android.webkit.CookieManager;
 
 import org.json.JSONArray;
@@ -19,7 +20,9 @@ public final class CdaHttp {
     public static final class Result {
         public int status;
         public String body = "";
+        public String finalUrl = "";
         public boolean challenge;
+        public long elapsedMs;
     }
 
     private final Context context;
@@ -41,32 +44,78 @@ public final class CdaHttp {
         }
     }
 
+    public boolean hasClearance() {
+        try {
+            String cookie = CookieManager.getInstance().getCookie("https://www.cda.pl/");
+            return cookie != null && cookie.contains("cf_clearance=");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public Result get(String url, RequestToken token) throws Exception {
-        return get(url, token, userAgent());
+        return get(url, token, userAgent(), "https://www.cda.pl/");
     }
 
     public Result getCatalog(String url, RequestToken token) throws Exception {
-        return get(url, token, CdaBrowserIdentity.catalogUserAgent(context));
+        return get(url, token, CdaBrowserIdentity.catalogUserAgent(context), "https://www.cda.pl/");
     }
 
-    private Result get(String url, RequestToken token, String userAgent) throws Exception {
-        checkCancelled(token);
-        HttpURLConnection c = open(url, "GET", "https://www.cda.pl/", userAgent);
+    public Result prepareFullSite(RequestToken token) throws Exception {
+        return get("https://m.cda.pl/gofullcda", token, userAgent(), "https://m.cda.pl/");
+    }
+
+    public boolean isMobileResult(Result result) {
+        if (result == null || result.finalUrl == null || result.finalUrl.isEmpty()) return false;
         try {
-            if (token != null) token.attach(c);
-            int status = c.getResponseCode();
-            String body = readBody(c, status, token);
-            syncCookies(url, c);
-            Result r = new Result();
-            r.status = status;
-            r.body = body;
-            r.challenge = isChallenge(status, body);
-            if (!r.challenge && (status < 200 || status >= 300)) throw new java.io.IOException("CDA HTTP " + status);
-            return r;
-        } finally {
-            if (token != null) token.detach(c);
-            c.disconnect();
+            String host = new URL(result.finalUrl).getHost();
+            return "m.cda.pl".equalsIgnoreCase(host);
+        } catch (Exception ignored) {
+            return result.finalUrl.startsWith("https://m.cda.pl/");
         }
+    }
+
+    private Result get(String url, RequestToken token, String userAgent, String referer) throws Exception {
+        checkCancelled(token);
+        long started = SystemClock.elapsedRealtime();
+        String current = url;
+        String currentReferer = referer;
+
+        for (int redirects = 0; redirects <= 6; redirects++) {
+            checkCancelled(token);
+            HttpURLConnection c = open(current, "GET", currentReferer, userAgent);
+            c.setInstanceFollowRedirects(false);
+            try {
+                if (token != null) token.attach(c);
+                int status = c.getResponseCode();
+                syncCookies(current, c);
+
+                if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                    String location = c.getHeaderField("Location");
+                    if (location != null && !location.trim().isEmpty()) {
+                        if (redirects == 6) throw new java.io.IOException("Za dużo przekierowań CDA");
+                        String next = new URL(new URL(current), location).toString();
+                        currentReferer = current;
+                        current = next;
+                        continue;
+                    }
+                }
+
+                String body = readBody(c, status, token);
+                Result r = new Result();
+                r.status = status;
+                r.body = body;
+                r.finalUrl = current;
+                r.challenge = isChallenge(status, body);
+                r.elapsedMs = SystemClock.elapsedRealtime() - started;
+                if (!r.challenge && (status < 200 || status >= 300)) throw new java.io.IOException("CDA HTTP " + status);
+                return r;
+            } finally {
+                if (token != null) token.detach(c);
+                c.disconnect();
+            }
+        }
+        throw new java.io.IOException("Za dużo przekierowań CDA");
     }
 
     public String videoGetLink(String pageUrl, String videoId, PlayerData data,
@@ -171,16 +220,19 @@ public final class CdaHttp {
         try {
             Map<String, List<String>> headers = c.getHeaderFields();
             if (headers == null) return;
+            boolean changed = false;
             for (Map.Entry<String, List<String>> e : headers.entrySet()) {
                 String name = e.getKey();
                 if (name == null || !"set-cookie".equalsIgnoreCase(name)) continue;
                 List<String> values = e.getValue();
                 if (values == null) continue;
                 for (String value : values) {
-                    if (value != null && !value.isEmpty()) CookieManager.getInstance().setCookie(url, value);
+                    if (value == null || value.isEmpty()) continue;
+                    CookieManager.getInstance().setCookie(url, value);
+                    changed = true;
                 }
             }
-            CookieManager.getInstance().flush();
+            if (changed) CookieManager.getInstance().flush();
         } catch (Exception ignored) {}
     }
 

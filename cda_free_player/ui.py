@@ -112,6 +112,7 @@ class App:
         self.card_footer_frames = {}
         self.photos = {}
         self.comments_memory = {}
+        self.metadata_memory = {}
         self.movie_windows = {}
 
 
@@ -2078,7 +2079,6 @@ class App:
         self.card_buttons.clear()
         self.card_frames.clear()
         self.card_positions.clear()
-        self.card_rating_views.clear()
         self.card_footer_frames.clear()
         self.photos.clear()
 
@@ -2535,11 +2535,6 @@ class App:
             if item["id"] in self.items_by_id:
                 continue
 
-            if not item.get("short_rating"):
-                cached_meta = self.db.metadata(item["id"])
-                if cached_meta and cached_meta.get("rating"):
-                    item["short_rating"] = cached_meta["rating"]
-
             index = len(self.items)
             self.items.append(item)
             self.items_by_id[item["id"]] = item
@@ -2618,21 +2613,11 @@ class App:
                 font=("Sans", 8, "bold"), anchor="w"
             )
             duration_label.pack(side="left")
-            rating_view = StarRatingView(
-                footer,
-                item.get("short_rating"),
-                star_size=12,
-                gap=2,
-                bg=CARD,
-            )
-            rating_view.pack(side="right")
-
             self.add_progress_bar(card, item)
 
             self.bind_card_mouse(card, index)
             self.card_frames.append(card)
             self.card_buttons.append(button)
-            self.card_rating_views[item["id"]] = rating_view
             self.card_footer_frames[item["id"]] = footer
             self.load_thumb(item, button, index)
 
@@ -2779,36 +2764,31 @@ class App:
             text=f"{normalized:.1f} / 5"
         )
 
-    def update_card_rating(
-        self,
-        item,
-        rating,
-    ):
-        normalized = normalize_rating(
-            rating
-        )
+    def set_detail_metadata(self, data):
+        data = data or {}
+        self.set_detail_rating(data.get("rating"))
+        parts = []
+        votes = data.get("cda_votes")
+        if votes is not None:
+            parts.append(f"CDA • {votes} ocen")
+        imdb = data.get("imdb_rating")
+        if imdb:
+            text = f"IMDb {imdb} / 10"
+            imdb_votes = data.get("imdb_votes")
+            if imdb_votes is not None:
+                text += f" • {imdb_votes} głosów"
+            parts.append(text)
+        self.detail_source_ratings.configure(text="   ".join(parts))
 
-        stars = self.card_rating_views.get(
-            item["id"]
-        )
-
-        if stars is None:
-            return
-
-        stars.set_rating(
-            normalized
-        )
+    def update_card_rating(self, item, rating):
+        return
 
     def show_movie_details(self, item):
         self.show_left_detail()
         self.detail_title.configure(text=item["title"])
 
-        rating = item.get(
-            "short_rating"
-        )
-        self.set_detail_rating(
-            rating
-        )
+        cached_meta = self.metadata_memory.get(item["id"])
+        self.set_detail_metadata(cached_meta)
 
         meta = []
         if item.get("duration"):
@@ -2820,13 +2800,8 @@ class App:
                 progress += f" / {self.format_time(total)}"
             meta.append(progress)
         self.detail_meta.configure(text="\n".join(meta))
-        self.detail_source_ratings.configure(
-            text=""
-        )
 
-        cached_comments = self.db.comments(
-            item["id"]
-        )
+        cached_comments = self.comments_memory.get(item["id"])
         initial_count = (
             len(cached_comments)
             if cached_comments is not None
@@ -2877,10 +2852,9 @@ class App:
         item = self.current_card_item()
         if not item:
             return
-        metadata = self.db.metadata(item["id"]) or {
-            "description": item.get("short_description", ""),
-            "rating": item.get("short_rating", ""),
-        }
+        metadata = dict(self.metadata_memory.get(item["id"]) or {})
+        if not metadata.get("description"):
+            metadata["description"] = item.get("short_description", "")
         old = self.movie_windows.get(item["id"])
         if old is not None:
             try:
@@ -2907,8 +2881,9 @@ class App:
         if mode == "comments":
             panel.request_comments()
         else:
-            cached_full = self.db.metadata(item["id"])
+            cached_full = self.metadata_memory.get(item["id"])
             if cached_full and cached_full.get("description"):
+                panel.set_metadata(cached_full)
                 panel.set_description(cached_full.get("description"))
             else:
                 panel.set_description_loading()
@@ -2961,11 +2936,17 @@ class App:
         try:
             text, source = self.client.get_html(item["url"], True)
             data, _ = parse_metadata(text)
-            self.db.save_metadata(item["id"], data)
+            comments = parse_comments(text)
+            parsed_comment_count = data.get("comment_count")
+            if parsed_comment_count is None and comments:
+                data["comment_count"] = len(comments)
+            cached_comments = comments if comments or parsed_comment_count is not None else None
             self.events.put((
                 "panel_description",
                 item["id"],
                 panel,
+                data,
+                cached_comments,
                 data.get("description") or item.get("short_description", ""),
             ))
             log_event(
@@ -2983,8 +2964,11 @@ class App:
             ))
 
     def load_comments_for_panel(self, item, panel):
-        cached = self.db.comments(item["id"])
+        cached = self.comments_memory.get(item["id"])
         if cached is not None:
+            meta = self.metadata_memory.get(item["id"])
+            if meta:
+                panel.set_metadata(meta)
             panel.set_comments(
                 cached
             )
@@ -3012,15 +2996,13 @@ class App:
                 self.events.put(("comments_error", item["id"], panel, "Komentarze wymagają aktywnej sesji CDA."))
                 return
             comments = parse_comments(text)
-            self.db.save_comments(
-                item["id"],
-                comments,
-            )
+            data, _ = parse_metadata(text)
             self.events.put((
                 "comments",
                 item["id"],
                 panel,
                 comments,
+                data,
             ))
             log_event("comments", id=item["id"], source=source, count=len(comments))
         except Exception as exc:
@@ -3031,7 +3013,37 @@ class App:
             self.root,
             self.db,
             on_data_changed=self.refresh_after_settings,
+            on_cache_clear=self.clear_transient_cache,
         )
+
+    def remember_metadata(self, vid, data):
+        current = dict(self.metadata_memory.get(vid) or {})
+        for key, value in (data or {}).items():
+            if value is not None and value != "" and value != []:
+                current[key] = value
+        self.metadata_memory.pop(vid, None)
+        self.metadata_memory[vid] = current
+        while len(self.metadata_memory) > 24:
+            self.metadata_memory.pop(next(iter(self.metadata_memory)))
+        return current
+
+    def remember_comments(self, vid, comments):
+        self.comments_memory.pop(vid, None)
+        self.comments_memory[vid] = comments
+        while len(self.comments_memory) > 12:
+            self.comments_memory.pop(next(iter(self.comments_memory)))
+
+    def clear_transient_cache(self):
+        self.metadata_memory.clear()
+        self.comments_memory.clear()
+        self.photos.clear()
+        try:
+            for path in THUMB_DIR.iterdir():
+                if path.is_file():
+                    path.unlink()
+        except OSError:
+            pass
+        self.set_detail_metadata(None)
 
     def refresh_after_settings(self):
         if self.view_mode == "recent":
@@ -3511,12 +3523,19 @@ class App:
                         )
 
                 elif kind == "panel_description":
-                    _, vid, panel, description = event
+                    _, vid, panel, data, comments, description = event
+                    data = self.remember_metadata(vid, data)
+                    if comments is not None:
+                        self.remember_comments(vid, comments)
                     try:
                         if panel.win.winfo_exists():
+                            panel.set_metadata(data)
                             panel.set_description(description)
                     except Exception:
                         pass
+                    current = self.current_card_item()
+                    if current and current["id"] == vid:
+                        self.set_detail_metadata(data)
 
                 elif kind == "panel_description_error":
                     _, vid, panel, error = event
@@ -3527,15 +3546,22 @@ class App:
                         pass
 
                 elif kind == "comments":
-                    _, vid, panel, comments = event
+                    _, vid, panel, comments, data = event
+                    self.remember_comments(vid, comments)
+                    data = self.remember_metadata(vid, data)
 
                     try:
                         if panel.win.winfo_exists():
+                            panel.set_metadata(data)
                             panel.set_comments(
                                 comments
                             )
                     except Exception:
                         pass
+
+                    current = self.current_card_item()
+                    if current and current["id"] == vid:
+                        self.set_detail_metadata(data)
 
                     current = self.current_card_item()
 

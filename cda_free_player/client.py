@@ -479,11 +479,7 @@ def parse_results(page_html):
                     context,
                 )
             ),
-            "short_rating": (
-                rating_from_tile(
-                    context,
-                )
-            ),
+            "short_rating": "",
         })
 
     return videos, {

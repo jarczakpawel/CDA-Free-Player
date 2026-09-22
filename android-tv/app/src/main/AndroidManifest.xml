@@ -16,6 +16,7 @@
     </queries>
 
     <application
+        android:name=".CdaApplication"
         android:allowBackup="true"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="false"

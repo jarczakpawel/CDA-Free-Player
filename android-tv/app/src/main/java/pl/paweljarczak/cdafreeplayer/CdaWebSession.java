@@ -2,6 +2,7 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.net.Uri;
+import android.content.pm.PackageInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,6 +21,7 @@ import android.widget.FrameLayout;
 import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.ScriptHandler;
 import androidx.webkit.WebMessageCompat;
+import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
@@ -43,11 +45,13 @@ public final class CdaWebSession {
     }
 
     private static final String TAG = "CDAFP";
-    private static final long INTERACTIVE_GRACE_MS = 1000;
-    private static final long NORMAL_SETTLE_MS = 300;
-    private static final long SEARCH_SETTLE_MS = 3000;
+    private static final long INTERACTIVE_GRACE_MS = 700;
+    private static final long NORMAL_SETTLE_MS = 250;
+    private static final long SEARCH_SETTLE_MS = 2500;
     private static final long PLAYER_SETTLE_MS = 12000;
     private static final long INSPECT_RETRY_MS = 180;
+    private static final long CHALLENGE_RETRY_MS = 450;
+    private static final long FULL_SITE_TIMEOUT_MS = 30000;
     private static final long WARM_IDLE_MS = 5L * 60 * 1000;
 
     private static final Set<String> CDA_ORIGINS = new HashSet<>(Arrays.asList(
@@ -59,7 +63,8 @@ public final class CdaWebSession {
     private String captureScript;
     private ScriptHandler captureHook;
     private Runnable inspectTask, timeoutTask, fullSiteTask;
-    private boolean destroyed, fullSitePrepared, fullSiteBootstrap;
+    private boolean destroyed, fullSiteBootstrap;
+    private volatile boolean fullSitePrepared;
 
     private static final class Job {
         final String id = UUID.randomUUID().toString();
@@ -79,7 +84,7 @@ public final class CdaWebSession {
     private final Queue<Job> jobs = new ArrayDeque<>();
     private WebView web;
     private Job current;
-    private long started, cleanSince;
+    private long started, cleanSince, challengeSince;
     private boolean shown;
     private Runnable destroyTask;
     private String capturedPlayerData = "";
@@ -88,8 +93,6 @@ public final class CdaWebSession {
         activity = a;
         this.overlay = overlay;
         this.host = host;
-        try { CookieManager.getInstance().setAcceptCookie(true); }
-        catch (RuntimeException e) { Log.w(TAG, "WebView provider unavailable"); }
     }
 
     private void ensureWeb() {
@@ -109,24 +112,38 @@ public final class CdaWebSession {
             return;
         }
 
+        long webStarted = SystemClock.elapsedRealtime();
         web = new WebView(activity);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setLoadsImagesAutomatically(true);
+        s.setBlockNetworkImage(false);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setSupportMultipleWindows(false);
         s.setMediaPlaybackRequiresUserGesture(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         CdaBrowserIdentity.apply(activity, s);
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOWNLOAD_FAVICONS_ENABLED)) {
+                WebSettingsCompat.setDownloadFaviconsEnabled(s, false);
+            }
+        } catch (Throwable ignored) {}
 
-        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
-        web.setFocusable(true);
-        web.setFocusableInTouchMode(true);
+        CookieManager cookies = CookieManager.getInstance();
+        cookies.setAcceptCookie(true);
+        cookies.setAcceptThirdPartyCookies(web, true);
+        web.setFocusable(false);
+        web.setFocusableInTouchMode(false);
 
         if (Build.VERSION.SDK_INT >= 26) {
-            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true);
+            web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
         }
+        PackageInfo provider = WebView.getCurrentWebViewPackage();
+        Log.i(TAG, "WebView instance ready in " + (SystemClock.elapsedRealtime() - webStarted) + "ms" +
+                (provider == null ? "" : "; provider=" + provider.packageName + "/" + provider.versionName));
 
         installPlayerCaptureBridge();
 
@@ -135,18 +152,8 @@ public final class CdaWebSession {
                 Job job = current;
                 if (job == null) return;
                 if (fullSiteBootstrap) {
-                    Uri uri = Uri.parse(u == null ? "" : u);
-                    String host = uri.getHost();
-                    if (host != null && (host.equalsIgnoreCase("www.cda.pl") || host.equalsIgnoreCase("cda.pl"))) {
-                        fullSiteBootstrap = false;
-                        fullSitePrepared = true;
-                        if (fullSiteTask != null) h.removeCallbacks(fullSiteTask);
-                        fullSiteTask = null;
-                        Log.i(TAG, "CDA full-site session prepared");
-                        h.post(() -> {
-                            if (job == current && web != null) web.loadUrl(job.url);
-                        });
-                    }
+                    Log.i(TAG, "CDA full-site bootstrap page finished: " + safeUrl(u));
+                    scheduleInspect(job, 0);
                     return;
                 }
                 if (!samePage(job.url, u)) return;
@@ -178,6 +185,10 @@ public final class CdaWebSession {
                 Job failed = current;
                 current = null;
                 clearPending();
+                shown = false;
+                overlay.setAlpha(1f);
+                overlay.setFocusable(false);
+                overlay.setFocusableInTouchMode(false);
                 overlay.setVisibility(View.GONE);
                 dropWeb();
                 if (failed != null) failed.cb.onError("Renderer WebView został odtworzony");
@@ -188,6 +199,13 @@ public final class CdaWebSession {
         host.addView(web, new FrameLayout.LayoutParams(-1, -1));
         Log.i(TAG, "WebView created; identity=" + CdaBrowserIdentity.mode(activity) +
                 "; ua=" + s.getUserAgentString());
+    }
+
+    public void clearCache() {
+        h.post(() -> {
+            try { if (web != null) web.clearCache(true); }
+            catch (RuntimeException ignored) {}
+        });
     }
 
     private void installPlayerCaptureBridge() {
@@ -221,6 +239,8 @@ public final class CdaWebSession {
     }
 
     public boolean isFullSitePrepared() { return fullSitePrepared; }
+
+    public void markFullSitePrepared() { fullSitePrepared = true; }
 
     public void fetch(String url, RequestToken token, Callback cb) {
         enqueue(new Job(url, token, cb, false));
@@ -263,9 +283,17 @@ public final class CdaWebSession {
         }
         started = SystemClock.elapsedRealtime();
         cleanSince = 0L;
+        challengeSince = 0L;
         shown = false;
         capturedPlayerData = "";
-        overlay.setVisibility(View.INVISIBLE);
+        overlay.setAlpha(0f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
+        overlay.setVisibility(View.VISIBLE);
+        if (web != null) {
+            web.setFocusable(false);
+            web.setFocusableInTouchMode(false);
+        }
         current.cb.onVerification(false);
         Log.i(TAG, (current.expectPlayer ? "player" : "page") + " WebView load: " + safeUrl(current.url));
         Job job = current;
@@ -286,11 +314,10 @@ public final class CdaWebSession {
                 fullSiteTask = () -> {
                     if (job != current || web == null || !fullSiteBootstrap) return;
                     fullSiteBootstrap = false;
-                    fullSitePrepared = true;
-                    Log.w(TAG, "CDA full-site bootstrap timed out; continuing with current site mode");
+                    Log.w(TAG, "CDA full-site bootstrap timed out; continuing without forcing site mode");
                     web.loadUrl(job.url);
                 };
-                h.postDelayed(fullSiteTask, 8000);
+                h.postDelayed(fullSiteTask, FULL_SITE_TIMEOUT_MS);
                 web.loadUrl("https://m.cda.pl/gofullcda");
             } else {
                 web.loadUrl(job.url);
@@ -305,8 +332,61 @@ public final class CdaWebSession {
             return;
         }
         job.inspecting = true;
-        if (job.expectPlayer) inspectPlayer(job);
+        if (fullSiteBootstrap) inspectFullSiteBootstrap(job);
+        else if (job.expectPlayer) inspectPlayer(job);
         else inspectPage(job);
+    }
+
+    private void inspectFullSiteBootstrap(final Job job) {
+        if (job != current || web == null) return;
+        String script = "(function(){try{" +
+                "var s=(document.body?document.body.innerText:'').toLowerCase();" +
+                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
+                "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
+                "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
+                "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF';" +
+                "return document.readyState+'|'+location.host+'|'+location.pathname;}catch(e){return 'ERR';}})()";
+        web.evaluateJavascript(script, value -> {
+            job.inspecting = false;
+            if (job != current || web == null || !fullSiteBootstrap) return;
+            String state = decode(value);
+            long now = SystemClock.elapsedRealtime();
+            if ("CF".equals(state)) {
+                cleanSince = 0L;
+                markChallenge(job, now);
+                showVerificationWhenNeeded(job, now);
+                scheduleInspect(job, CHALLENGE_RETRY_MS);
+                return;
+            }
+            if (!state.startsWith("complete|")) {
+                scheduleInspect(job, INSPECT_RETRY_MS);
+                return;
+            }
+            markChallengeCleared(now);
+            String[] parts = state.split("\\|", 3);
+            String hostName = parts.length > 1 ? parts[1] : "";
+            if ("www.cda.pl".equalsIgnoreCase(hostName) || "cda.pl".equalsIgnoreCase(hostName)) {
+                fullSiteBootstrap = false;
+                fullSitePrepared = true;
+                if (fullSiteTask != null) h.removeCallbacks(fullSiteTask);
+                fullSiteTask = null;
+                Log.i(TAG, "CDA full-site session prepared in " + (now - started) + "ms");
+                h.post(() -> {
+                    if (job == current && web != null) web.loadUrl(job.url);
+                });
+                return;
+            }
+            if (fullSiteTask == null) {
+                fullSiteTask = () -> {
+                    if (job != current || web == null || !fullSiteBootstrap) return;
+                    fullSiteBootstrap = false;
+                    Log.w(TAG, "CDA full-site redirect did not complete; continuing with current site mode");
+                    web.loadUrl(job.url);
+                };
+                h.postDelayed(fullSiteTask, 700);
+            }
+            scheduleInspect(job, INSPECT_RETRY_MS);
+        });
     }
 
     private void inspectPlayer(final Job job) {
@@ -319,7 +399,7 @@ public final class CdaWebSession {
         String script = "(function(){try{" +
                 "var raw=window.__CDA_FP_READ_PLAYER?window.__CDA_FP_READ_PLAYER():'';if(raw)return 'PD:'+raw;" +
                 "var s=(document.body?document.body.innerText:'').toLowerCase();" +
-                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge')||" +
+                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
                 "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
                 "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
                 "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF:';" +
@@ -343,8 +423,9 @@ public final class CdaWebSession {
 
             if (state.startsWith("CF:")) {
                 cleanSince = 0L;
+                markChallenge(job, now);
                 showVerificationWhenNeeded(job, now);
-                scheduleInspect(job, INSPECT_RETRY_MS);
+                scheduleInspect(job, CHALLENGE_RETRY_MS);
                 return;
             }
 
@@ -352,6 +433,7 @@ public final class CdaWebSession {
                 scheduleInspect(job, INSPECT_RETRY_MS);
                 return;
             }
+            markChallengeCleared(now);
             if (cleanSince == 0L) cleanSince = now;
             long cleanFor = now - cleanSince;
             if (cleanFor < PLAYER_SETTLE_MS) {
@@ -373,7 +455,7 @@ public final class CdaWebSession {
 
     private void inspectPage(final Job job) {
         String script = "(function(){var s=(document.body?document.body.innerText:'').toLowerCase();" +
-                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge')||" +
+                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
                 "s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||" +
                 "s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0||" +
                 "document.title.toLowerCase().indexOf('just a moment')>=0)return 'CF';" +
@@ -385,14 +467,16 @@ public final class CdaWebSession {
             long now = SystemClock.elapsedRealtime();
             if ("CF".equals(state)) {
                 cleanSince = 0L;
+                markChallenge(job, now);
                 showVerificationWhenNeeded(job, now);
-                scheduleInspect(job, INSPECT_RETRY_MS);
+                scheduleInspect(job, CHALLENGE_RETRY_MS);
                 return;
             }
             if (!state.startsWith("complete:")) {
                 scheduleInspect(job, INSPECT_RETRY_MS);
                 return;
             }
+            markChallengeCleared(now);
             if (cleanSince == 0L) cleanSince = now;
             long cleanFor = now - cleanSince;
             boolean waitForSearch = isSearchUrl(job.url) && !state.endsWith(":1") && cleanFor < SEARCH_SETTLE_MS;
@@ -406,11 +490,51 @@ public final class CdaWebSession {
         });
     }
 
+    private void markChallenge(Job job, long now) {
+        if (challengeSince != 0L) return;
+        challengeSince = now;
+        if (fullSiteBootstrap && fullSiteTask != null) {
+            h.removeCallbacks(fullSiteTask);
+            fullSiteTask = null;
+        }
+        Log.i(TAG, "Cloudflare challenge detected after " + (now - started) + "ms; bootstrap=" + fullSiteBootstrap);
+    }
+
+    private void markChallengeCleared(long now) {
+        if (challengeSince == 0L) return;
+        boolean clearance = false;
+        try {
+            String cookie = CookieManager.getInstance().getCookie("https://www.cda.pl/");
+            clearance = cookie != null && cookie.contains("cf_clearance=");
+        } catch (Exception ignored) {}
+        Log.i(TAG, "Cloudflare challenge cleared in " + (now - challengeSince) + "ms; clearance=" + clearance);
+        challengeSince = 0L;
+        if (shown && fullSiteBootstrap) {
+            shown = false;
+            overlay.setAlpha(0f);
+            overlay.setFocusable(false);
+            overlay.setFocusableInTouchMode(false);
+            if (web != null) {
+                web.setFocusable(false);
+                web.setFocusableInTouchMode(false);
+            }
+            Job job = current;
+            if (job != null) job.cb.onVerification(false);
+        }
+    }
+
     private void showVerificationWhenNeeded(Job job, long now) {
         if (!shown && now - started > INTERACTIVE_GRACE_MS) {
             shown = true;
+            overlay.setAlpha(1f);
+            overlay.setFocusable(true);
+            overlay.setFocusableInTouchMode(true);
             overlay.setVisibility(View.VISIBLE);
-            if (web != null) web.requestFocus();
+            if (web != null) {
+                web.setFocusable(true);
+                web.setFocusableInTouchMode(true);
+                web.requestFocus();
+            }
             job.cb.onVerification(true);
             Log.i(TAG, "Cloudflare verification shown after " + (now - started) + "ms");
         }
@@ -419,8 +543,16 @@ public final class CdaWebSession {
     private void finishCurrent(Job job, String html) {
         if (job == null || job != current) return;
         clearPending();
+        shown = false;
+        overlay.setAlpha(1f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
-        if (web != null) web.stopLoading();
+        if (web != null) {
+            web.setFocusable(false);
+            web.setFocusableInTouchMode(false);
+            web.stopLoading();
+        }
         try { CookieManager.getInstance().flush(); } catch (Exception ignored) {}
         current = null;
         if (job.token == null || !job.token.isCancelled()) job.cb.onHtml(html == null ? "" : html);
@@ -452,8 +584,16 @@ public final class CdaWebSession {
         if (job == null || job != current) return;
         clearPending();
         current = null;
+        shown = false;
+        overlay.setAlpha(1f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
-        if (web != null) web.stopLoading();
+        if (web != null) {
+            web.setFocusable(false);
+            web.setFocusableInTouchMode(false);
+            web.stopLoading();
+        }
         if (job.token == null || !job.token.isCancelled()) job.cb.onError(error);
         startNext();
     }
@@ -467,7 +607,7 @@ public final class CdaWebSession {
                 !target.contains("/show/") && path.startsWith(target + "/"));
     }
 
-    public boolean isInteractive() { return overlay.getVisibility() == View.VISIBLE; }
+    public boolean isInteractive() { return shown && overlay.getVisibility() == View.VISIBLE; }
 
     public void cancel(RequestToken token) {
         if (token == null) return;
@@ -476,7 +616,16 @@ public final class CdaWebSession {
             clearPending();
             current = null;
             capturedPlayerData = "";
-            if (web != null) { web.stopLoading(); web.loadUrl("about:blank"); }
+            if (web != null) {
+                web.setFocusable(false);
+                web.setFocusableInTouchMode(false);
+                web.stopLoading();
+                web.loadUrl("about:blank");
+            }
+            shown = false;
+            overlay.setAlpha(1f);
+            overlay.setFocusable(false);
+            overlay.setFocusableInTouchMode(false);
             overlay.setVisibility(View.GONE);
             startNext();
         }
@@ -493,6 +642,10 @@ public final class CdaWebSession {
             try { web.stopLoading(); } catch (Exception ignored) {}
             try { web.loadUrl("about:blank"); } catch (Exception ignored) {}
         }
+        shown = false;
+        overlay.setAlpha(1f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
         if (cancelled != null) cancelled.cb.onError("Anulowano");
         for (Job job : cancelledJobs) job.cb.onError("Anulowano");
@@ -504,6 +657,10 @@ public final class CdaWebSession {
         current = null;
         jobs.clear();
         capturedPlayerData = "";
+        shown = false;
+        overlay.setAlpha(1f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
         if (destroyTask != null) h.removeCallbacks(destroyTask);
         dropWeb();
@@ -538,6 +695,10 @@ public final class CdaWebSession {
         capturedPlayerData = "";
         if (destroyTask != null) h.removeCallbacks(destroyTask);
         dropWeb();
+        shown = false;
+        overlay.setAlpha(1f);
+        overlay.setFocusable(false);
+        overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
     }
 
