@@ -51,8 +51,8 @@ public final class CdaWebSession {
     private static final long PLAYER_SETTLE_MS = 12000;
     private static final long INSPECT_RETRY_MS = 180;
     private static final long CHALLENGE_RETRY_MS = 450;
-    private static final long FULL_SITE_TIMEOUT_MS = 30000;
-    private static final long WARM_IDLE_MS = 5L * 60 * 1000;
+    private static final long FULL_SITE_TIMEOUT_MS = 8000;
+    private static final long PLAYBACK_IDLE_MS = 1200;
 
     private static final Set<String> CDA_ORIGINS = new HashSet<>(Arrays.asList(
             "https://cda.pl",
@@ -63,7 +63,7 @@ public final class CdaWebSession {
     private String captureScript;
     private ScriptHandler captureHook;
     private Runnable inspectTask, timeoutTask, fullSiteTask;
-    private boolean destroyed, fullSiteBootstrap;
+    private boolean destroyed, fullSiteBootstrap, playbackContext;
     private volatile boolean fullSitePrepared;
 
     private static final class Job {
@@ -108,6 +108,7 @@ public final class CdaWebSession {
             }
         }
         if (web != null) {
+            if (destroyTask != null) { h.removeCallbacks(destroyTask); destroyTask = null; }
             try { web.onResume(); } catch (Exception ignored) {}
             return;
         }
@@ -183,6 +184,7 @@ public final class CdaWebSession {
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 Job failed = current;
+                boolean wasInteractive = shown;
                 current = null;
                 clearPending();
                 shown = false;
@@ -191,7 +193,10 @@ public final class CdaWebSession {
                 overlay.setFocusableInTouchMode(false);
                 overlay.setVisibility(View.GONE);
                 dropWeb();
-                if (failed != null) failed.cb.onError("Renderer WebView został odtworzony");
+                if (failed != null) {
+                    if (wasInteractive) failed.cb.onVerification(false);
+                    failed.cb.onError("Renderer WebView został odtworzony");
+                }
                 h.postDelayed(CdaWebSession.this::startNext, 150);
                 return true;
             }
@@ -261,10 +266,8 @@ public final class CdaWebSession {
         if (destroyTask != null) h.removeCallbacks(destroyTask);
         current = jobs.poll();
         if (current == null) {
-            if (web != null) {
-                try { web.onPause(); } catch (Exception ignored) {}
-            }
-            scheduleDestroy();
+            parkIdleWeb();
+            if (playbackContext) scheduleDestroy();
             return;
         }
         if (current.token != null && current.token.isCancelled()) {
@@ -319,8 +322,10 @@ public final class CdaWebSession {
                 };
                 h.postDelayed(fullSiteTask, FULL_SITE_TIMEOUT_MS);
                 web.loadUrl("https://m.cda.pl/gofullcda");
+                scheduleInspect(job, 250);
             } else {
                 web.loadUrl(job.url);
+                scheduleInspect(job, 250);
             }
         } catch (RuntimeException e) { failCurrent(job, "Nie można otworzyć strony CDA"); }
     }
@@ -542,20 +547,20 @@ public final class CdaWebSession {
 
     private void finishCurrent(Job job, String html) {
         if (job == null || job != current) return;
+        boolean wasInteractive = shown;
         clearPending();
-        shown = false;
-        overlay.setAlpha(1f);
-        overlay.setFocusable(false);
-        overlay.setFocusableInTouchMode(false);
-        overlay.setVisibility(View.GONE);
+        hideOverlay();
         if (web != null) {
             web.setFocusable(false);
             web.setFocusableInTouchMode(false);
             web.stopLoading();
         }
-        try { CookieManager.getInstance().flush(); } catch (Exception ignored) {}
+        flushCookies();
         current = null;
-        if (job.token == null || !job.token.isCancelled()) job.cb.onHtml(html == null ? "" : html);
+        if (job.token == null || !job.token.isCancelled()) {
+            if (wasInteractive) job.cb.onVerification(false);
+            job.cb.onHtml(html == null ? "" : html);
+        }
         startNext();
     }
 
@@ -582,19 +587,19 @@ public final class CdaWebSession {
 
     private void failCurrent(Job job, String error) {
         if (job == null || job != current) return;
+        boolean wasInteractive = shown;
         clearPending();
         current = null;
-        shown = false;
-        overlay.setAlpha(1f);
-        overlay.setFocusable(false);
-        overlay.setFocusableInTouchMode(false);
-        overlay.setVisibility(View.GONE);
+        hideOverlay();
         if (web != null) {
             web.setFocusable(false);
             web.setFocusableInTouchMode(false);
             web.stopLoading();
         }
-        if (job.token == null || !job.token.isCancelled()) job.cb.onError(error);
+        if (job.token == null || !job.token.isCancelled()) {
+            if (wasInteractive) job.cb.onVerification(false);
+            job.cb.onError(error);
+        }
         startNext();
     }
 
@@ -613,6 +618,8 @@ public final class CdaWebSession {
         if (token == null) return;
         jobs.removeIf(job -> job.token == token);
         if (current != null && current.token == token) {
+            Job cancelled = current;
+            boolean wasInteractive = shown;
             clearPending();
             current = null;
             capturedPlayerData = "";
@@ -627,12 +634,14 @@ public final class CdaWebSession {
             overlay.setFocusable(false);
             overlay.setFocusableInTouchMode(false);
             overlay.setVisibility(View.GONE);
+            if (wasInteractive) cancelled.cb.onVerification(false);
             startNext();
         }
     }
 
     public void cancelCurrent() {
         Job cancelled = current;
+        boolean wasInteractive = shown;
         current = null;
         clearPending();
         Queue<Job> cancelledJobs = new ArrayDeque<>(jobs);
@@ -647,9 +656,20 @@ public final class CdaWebSession {
         overlay.setFocusable(false);
         overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
-        if (cancelled != null) cancelled.cb.onError("Anulowano");
+        if (cancelled != null) {
+            if (wasInteractive) cancelled.cb.onVerification(false);
+            cancelled.cb.onError("Anulowano");
+        }
         for (Job job : cancelledJobs) job.cb.onError("Anulowano");
         scheduleDestroy();
+    }
+
+    public void setPlaybackContext(boolean active) {
+        playbackContext = active;
+        if (active && current == null) {
+            parkIdleWeb();
+            scheduleDestroy();
+        }
     }
 
     public void releaseForPlayback() {
@@ -657,26 +677,52 @@ public final class CdaWebSession {
         current = null;
         jobs.clear();
         capturedPlayerData = "";
+        hideOverlay();
+        if (destroyTask != null) { h.removeCallbacks(destroyTask); destroyTask = null; }
+        flushCookies();
+        dropWeb();
+    }
+
+    private void parkIdleWeb() {
+        hideOverlay();
+        if (web == null) return;
+        web.setFocusable(false);
+        web.setFocusableInTouchMode(false);
+        if (playbackContext) {
+            try { web.stopLoading(); } catch (Exception ignored) {}
+            try { web.loadUrl("about:blank"); } catch (Exception ignored) {}
+        }
+        try { web.onPause(); } catch (Exception ignored) {}
+    }
+
+    private void hideOverlay() {
         shown = false;
         overlay.setAlpha(1f);
         overlay.setFocusable(false);
         overlay.setFocusableInTouchMode(false);
         overlay.setVisibility(View.GONE);
-        if (destroyTask != null) h.removeCallbacks(destroyTask);
-        dropWeb();
+    }
+
+    private void flushCookies() {
+        try { CookieManager.getInstance().flush(); } catch (Exception ignored) {}
     }
 
     private void scheduleDestroy() {
         if (destroyTask != null) h.removeCallbacks(destroyTask);
-        if (web == null || current != null) return;
+        destroyTask = null;
+        if (!playbackContext || web == null || current != null) return;
         destroyTask = () -> {
-            if (current != null || web == null) return;
+            destroyTask = null;
+            if (current != null || web == null || !playbackContext) return;
+            flushCookies();
             dropWeb();
+            Log.i(TAG, "Playback WebView released after idle");
         };
-        h.postDelayed(destroyTask, WARM_IDLE_MS);
+        h.postDelayed(destroyTask, PLAYBACK_IDLE_MS);
     }
 
     private void dropWeb() {
+        if (destroyTask != null) { h.removeCallbacks(destroyTask); destroyTask = null; }
         WebView w = web;
         web = null;
         captureHook = null;
@@ -693,13 +739,10 @@ public final class CdaWebSession {
         jobs.clear();
         current = null;
         capturedPlayerData = "";
-        if (destroyTask != null) h.removeCallbacks(destroyTask);
+        if (destroyTask != null) { h.removeCallbacks(destroyTask); destroyTask = null; }
+        flushCookies();
         dropWeb();
-        shown = false;
-        overlay.setAlpha(1f);
-        overlay.setFocusable(false);
-        overlay.setFocusableInTouchMode(false);
-        overlay.setVisibility(View.GONE);
+        hideOverlay();
     }
 
     private static boolean isSearchUrl(String url) {

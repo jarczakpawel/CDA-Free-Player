@@ -72,7 +72,7 @@ public final class PlayerActivity extends Activity {
     private long initialResume = 0, lastPeriodicSave = 0;
     private int sourceIndex = 0;
     private Runnable tick, hideOsd, hideHint;
-    private boolean resumePlaying = true, readyToSave, fatalError, contentLoading;
+    private boolean resumePlaying = true, readyToSave, fatalError, contentLoading, resumeAfterVerification;
     private RequestToken contentToken;
     private View contentReturnFocus;
 
@@ -83,6 +83,18 @@ public final class PlayerActivity extends Activity {
         bind();
         readIntent();
         repo = new CdaRepository(this, (FrameLayout) securityOverlay, findViewById(R.id.securityHost));
+        repo.setPlaybackContext(true);
+        repo.setVerificationObserver((interactive, background) -> {
+            if (interactive) {
+                if (player != null && player.getPlayWhenReady()) {
+                    resumeAfterVerification = true;
+                    player.pause();
+                }
+            } else if (resumeAfterVerification) {
+                resumeAfterVerification = false;
+                if (player != null) player.play();
+            }
+        });
         db = repo.db();
         setupPlayer();
         setupOsd();

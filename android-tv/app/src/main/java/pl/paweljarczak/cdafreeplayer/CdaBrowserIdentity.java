@@ -31,6 +31,7 @@ public final class CdaBrowserIdentity {
     }
 
     public static void apply(Context context, WebSettings settings) {
-        settings.setUserAgentString(userAgent(context));
+        String nativeUa = settings.getUserAgentString();
+        if (nativeUa != null && !nativeUa.isEmpty()) cachedUserAgent = nativeUa;
     }
 }

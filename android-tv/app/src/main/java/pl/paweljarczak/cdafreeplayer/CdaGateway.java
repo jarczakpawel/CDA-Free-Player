@@ -164,6 +164,8 @@ public final class CdaGateway {
         main.post(() -> { if (!closed && (token == null || !token.isCancelled())) callback.run(); });
     }
 
+    public void setPlaybackContext(boolean active) { web.setPlaybackContext(active); }
+
     public void releaseForPlayback() { web.releaseForPlayback(); }
 
     public void shutdown() {

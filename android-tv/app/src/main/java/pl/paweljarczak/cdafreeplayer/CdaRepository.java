@@ -392,8 +392,9 @@ public final class CdaRepository {
                     MovieMetadata explicit = sessionMetadata(m.id);
                     if (explicit != null) md = mergeMetadata(md, explicit);
                     PlayerData ready = resolved;
-                    cachePlayer(m.id, ready, md);
-                    deliver(token, () -> { playerToken = null; listener.onPlayer(ready, md); });
+                    MovieMetadata readyMetadata = md;
+                    cachePlayer(m.id, ready, readyMetadata);
+                    deliver(token, () -> { playerToken = null; listener.onPlayer(ready, readyMetadata); });
                 });
             }
 
@@ -510,14 +511,20 @@ public final class CdaRepository {
         if (verificationObserver != null) verificationObserver.onVerification(interactive, background);
     }
 
+    public void setPlaybackContext(boolean active) {
+        gateway.setPlaybackContext(active);
+    }
+
     public void enterPlaybackMode() {
         playbackMode = true;
         cancelSearch();
+        gateway.setPlaybackContext(true);
         gateway.releaseForPlayback();
     }
 
     public void exitPlaybackMode() {
         playbackMode = false;
+        gateway.setPlaybackContext(false);
         restoreSearch();
     }
 
