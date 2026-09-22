@@ -11,6 +11,7 @@ from .config import (
     SELECTED,
     TEXT,
 )
+from .widgets import FlatButton
 from .rating import (
     StarRatingView,
     normalize_rating,
@@ -456,7 +457,7 @@ class MovieInfoWindow:
         text,
         command,
     ):
-        return tk.Button(
+        return FlatButton(
             parent,
             text=text,
             command=command,

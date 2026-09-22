@@ -50,6 +50,7 @@ from .player import Player
 from .rating import StarRatingView, normalize_rating
 from .movie_panel import MovieInfoWindow
 from .settings_window import SettingsWindow
+from .widgets import FlatButton
 
 
 class App:
@@ -192,7 +193,7 @@ class App:
         command=None,
         width=None,
     ):
-        return tk.Button(
+        return FlatButton(
             parent,
             text=text,
             command=command,
@@ -434,7 +435,7 @@ class App:
         )
         self.results_title.pack(side="left")
 
-        self.remove_collection_button = tk.Button(
+        self.remove_collection_button = FlatButton(
             self.header,
             text="",
             command=self.toggle_remove_mode,
@@ -530,6 +531,7 @@ class App:
             padx=10,
             pady=4,
             font=("Sans", 9),
+            width=1,
         )
         self.status.pack(
             fill="x",
@@ -751,6 +753,7 @@ class App:
             fg=TEXT,
             font=("Sans", 9, "bold"),
             anchor="w",
+            width=1,
         )
         self.left_status_main.pack(
             fill="x",
@@ -763,12 +766,13 @@ class App:
             fg=MUTED,
             font=("Sans", 8),
             anchor="w",
+            width=1,
         )
         self.left_status_sub.pack(
             fill="x",
         )
 
-        self.mouse_pad_toggle = tk.Button(
+        self.mouse_pad_toggle = FlatButton(
             self.left_status_frame,
             text="PAD",
             command=self.toggle_mouse_pad,
@@ -778,7 +782,7 @@ class App:
         )
         self.mouse_pad_toggle.pack(side="right", padx=(4, 8), pady=10)
 
-        self.settings_toggle = tk.Button(
+        self.settings_toggle = FlatButton(
             self.left_status_frame,
             text="⚙",
             command=self.open_settings,
@@ -793,7 +797,7 @@ class App:
             padx=5, pady=5,
         )
         def arrow(text, row, col, direction):
-            b = tk.Button(
+            b = FlatButton(
                 self.mouse_pad_popup, text=text,
                 command=lambda d=direction: self.desktop_pad_move(d),
                 width=3, height=1, bg=PANEL2, fg=TEXT, activebackground=SELECTED,
@@ -805,6 +809,13 @@ class App:
         arrow("←", 1, 0, "left")
         arrow("↓", 1, 1, "down")
         arrow("→", 1, 2, "right")
+        back = FlatButton(
+            self.mouse_pad_popup, text="BACK", command=self.on_controller_back,
+            bg=PANEL2, fg=TEXT, activebackground=SELECTED, activeforeground=TEXT,
+            relief="flat", bd=0, padx=7, pady=5, font=("Sans", 9, "bold"),
+            takefocus=False, anchor="center",
+        )
+        back.grid(row=2, column=0, columnspan=3, padx=2, pady=(4, 2), sticky="ew")
 
     def build_left_detail(self):
         self.detail_panel = tk.Frame(
@@ -897,7 +908,7 @@ class App:
             pady=(2, 4),
         )
 
-        self.detail_favorite_btn = tk.Button(
+        self.detail_favorite_btn = FlatButton(
             self.detail_actions,
             text="♡ Ulubione",
             command=self.toggle_favorite_current,
@@ -925,7 +936,7 @@ class App:
             pady=(0, 3),
         )
 
-        self.detail_description_btn = tk.Button(
+        self.detail_description_btn = FlatButton(
             self.detail_actions,
             text="Opis",
             command=lambda: self.open_movie_panel(
@@ -955,7 +966,7 @@ class App:
             pady=3,
         )
 
-        self.detail_comments_btn = tk.Button(
+        self.detail_comments_btn = FlatButton(
             self.detail_actions,
             text="Komentarze",
             command=lambda: self.open_movie_panel(
@@ -2604,7 +2615,7 @@ class App:
             self.card_positions.append((row, col))
 
             button_height = 148 if self.view_mode == "recent" else 158
-            button = tk.Button(
+            button = FlatButton(
                 card,
                 text=self.card_text(item),
                 image=self.placeholder,
@@ -3594,6 +3605,13 @@ class App:
                 elif kind == "play_end":
                     if self.view_mode == "recent":
                         self.show_recent()
+                    self.show_left_nav()
+                    self.controller.focus("left", self.section_left_index())
+                    try:
+                        self.root.lift()
+                        self.root.focus_force()
+                    except tk.TclError:
+                        pass
 
                 elif kind == "status":
                     self.status.configure(

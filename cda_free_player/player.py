@@ -40,6 +40,8 @@ class Player:
             {},
         )
 
+        dash_fallback = None
+
         if isinstance(
             qualities,
             dict,
@@ -111,13 +113,15 @@ class Player:
                         ] = "mpd-direct-range"
                         return tracks
 
-                    return {
-                        "kind": "dash",
-                        "quality": label,
-                        "video": stream,
-                        "audio": None,
-                        "source": "videoGetLink-mpd-fallback",
-                    }
+                    if dash_fallback is None:
+                        dash_fallback = {
+                            "kind": "dash",
+                            "quality": label,
+                            "video": stream,
+                            "audio": None,
+                            "source": "videoGetLink-mpd-fallback",
+                        }
+                    continue
 
                 if clean.endswith(".m3u8"):
                     return {
@@ -154,13 +158,14 @@ class Player:
                 ] = "player_data-mpd-direct-range"
                 return tracks
 
-            return {
-                "kind": "dash",
-                "quality": "auto",
-                "video": dash,
-                "audio": None,
-                "source": "player_data-mpd-fallback",
-            }
+            if dash_fallback is None:
+                dash_fallback = {
+                    "kind": "dash",
+                    "quality": "auto",
+                    "video": dash,
+                    "audio": None,
+                    "source": "player_data-mpd-fallback",
+                }
 
         hls = video.get(
             "manifest_apple"
@@ -180,6 +185,9 @@ class Player:
                 "audio": None,
                 "source": "player_data-hls",
             }
+
+        if dash_fallback is not None:
+            return dash_fallback
 
         direct = video.get(
             "file"
@@ -521,9 +529,16 @@ class Player:
         if session:
             headers.append("User-Agent: " + session["user_agent"])
         log_path = LOG_DIR / f"mpv-{datetime.now():%Y%m%d-%H%M%S}-{ipc_name[-8:]}.log"
+        input_file = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix="cdafp-input-", suffix=".conf", delete=False
+        )
+        input_path = input_file.name
+        input_file.write("ESC quit\nBS quit\n")
+        input_file.close()
         command = [
             mpv, "--no-config", "--fs", "--force-window=yes", "--ytdl=no", "--hwdec=auto-safe",
             "--cache=yes", "--cache-secs=15", "--demuxer-readahead-secs=12",
+            "--input-conf=" + input_path,
             "--input-ipc-server=" + ipc, "--title=" + item["title"],
             "--http-header-fields=" + ",".join(header.replace("\\", "\\\\").replace(",", "\\,") for header in headers),
         ]
@@ -539,8 +554,12 @@ class Player:
         cookie_path = None
         with self.lock:
             if cancel_event is not None and cancel_event.is_set():
+                try: os.unlink(input_path)
+                except FileNotFoundError: pass
                 raise SearchCancelled("Przygotowanie filmu przerwane")
             if self.process is not None and self.process.poll() is None:
+                try: os.unlink(input_path)
+                except FileNotFoundError: pass
                 raise RuntimeError("Film jest już odtwarzany. Zamknij jego okno przed otwarciem następnego.")
             if session and session.get("cookies"):
                 with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="cdafp-cookies-", delete=False) as cookies:
@@ -561,17 +580,19 @@ class Player:
                     )
             except Exception:
                 if cookie_path: os.unlink(cookie_path)
+                try: os.unlink(input_path)
+                except FileNotFoundError: pass
                 raise
             process = self.process
             self.monitor = threading.Thread(
-                target=self._monitor, args=(process, ipc, item, position, duration, cookie_path), daemon=True,
+                target=self._monitor, args=(process, ipc, item, position, duration, cookie_path, input_path), daemon=True,
             )
             self.monitor.start()
         log_event("play", id=item["id"], stream_type=kind, quality=quality,
                   resolve_source=resolved.get("source", ""), separate_audio=bool(audio), resume=position)
         return kind, quality, log_path
 
-    def _monitor(self, process, ipc, item, position, duration, cookie_path):
+    def _monitor(self, process, ipc, item, position, duration, cookie_path, input_path):
         conn = None
         ready = False
         last_save = 0
@@ -655,6 +676,8 @@ class Player:
             if cookie_path:
                 try: os.unlink(cookie_path)
                 except FileNotFoundError: pass
+            try: os.unlink(input_path)
+            except FileNotFoundError: pass
             if ready and duration > 0:
                 self.db.save_history(item, position, duration)
             if os.name != "nt":

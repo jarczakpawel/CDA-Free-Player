@@ -325,8 +325,7 @@ public final class MainActivity extends Activity {
         }
         manualSearch.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { voiceSearch.requestFocus(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { if (collectionMode != null) removeCollection.requestFocus(); else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_RIGHT) { voiceSearch.requestFocus(); return true; }
             return false;
         });
         voiceSearch.setOnKeyListener((v, key, event) -> {
@@ -334,7 +333,12 @@ public final class MainActivity extends Activity {
             if (key == KeyEvent.KEYCODE_DPAD_UP) { manualSearch.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) { settingsButton.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT) { manualSearch.requestFocus(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { if (collectionMode != null) removeCollection.requestFocus(); else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                if (adapter.getMovieCount() > 0) focusFirstCard();
+                else if (collectionMode != null) removeCollection.requestFocus();
+                else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                return true;
+            }
             return false;
         });
         removeCollection.setOnKeyListener((v, key, event) -> {

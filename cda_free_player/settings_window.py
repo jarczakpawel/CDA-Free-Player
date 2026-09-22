@@ -1,6 +1,8 @@
 import threading
 import queue
 import tkinter as tk
+
+from .widgets import FlatButton
 from tkinter import messagebox
 import webbrowser
 
@@ -58,7 +60,7 @@ class SettingsWindow:
         tk.Label(parent, text=text, bg=BG, fg=TEXT, font=("Sans", 12, "bold")).pack(anchor="w", pady=(10,6))
 
     def _button(self, parent, text, command):
-        return tk.Button(parent, text=text, command=command, bg=PANEL2, fg=TEXT,
+        return FlatButton(parent, text=text, command=command, bg=PANEL2, fg=TEXT,
                          activebackground=SELECTED, activeforeground=TEXT, relief="flat", bd=0,
                          highlightthickness=2, highlightbackground=PANEL2, highlightcolor=ACCENT,
                          padx=12, pady=7, font=("Sans", 10, "bold"))
