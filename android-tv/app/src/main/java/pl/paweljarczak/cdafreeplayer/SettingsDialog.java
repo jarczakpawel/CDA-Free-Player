@@ -31,8 +31,13 @@ public final class SettingsDialog {
         box.addView(author);
 
         Button github = button(a, "GitHub");
-        github.setOnClickListener(v -> a.startActivity(new Intent(Intent.ACTION_VIEW,
-                Uri.parse("https://github.com/jarczakpawel/CDA-Free-Player"))));
+        github.setOnClickListener(v -> {
+            try {
+                a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/jarczakpawel/CDA-Free-Player")));
+            } catch (RuntimeException e) {
+                Toast.makeText(a, "Brak przeglądarki na tym urządzeniu", Toast.LENGTH_LONG).show();
+            }
+        });
         box.addView(github);
 
         TextView updateStatus = text(a, "Aktualizacja: sprawdzanie…", 14, false);

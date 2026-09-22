@@ -1,150 +1,122 @@
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def is_challenge(html):
     value = (html or "").lower()
-    return (
-        "przeprowadzanie weryfikacji zabezpieczeń" in value
-        or "checking if you are not a bot" in value
-        or "/cdn-cgi/challenge-platform/" in value
-        or "cf-chl-" in value
-        or "just a moment..." in value
-        or "verify you are human" in value
-    )
+    return any(marker in value for marker in (
+        "przeprowadzanie weryfikacji zabezpieczeń", "checking if you are not a bot",
+        "verify you are human", "<title>just a moment", "id=\"challenge-form\"",
+        "id=\"challenge-running\"", "attention required! | cloudflare",
+    ))
 
 
 def serialize_cookies(cookies):
     out = []
     for cookie in cookies or []:
-        try:
-            for name, morsel in cookie.items():
-                out.append({
-                    "name": str(name),
-                    "value": str(morsel.value),
-                    "domain": str(morsel["domain"] or ".cda.pl"),
-                    "path": str(morsel["path"] or "/"),
-                })
-        except Exception:
-            pass
+        for name, morsel in cookie.items():
+            out.append({
+                "name": str(name), "value": str(morsel.value),
+                "domain": str(morsel["domain"] or ".cda.pl"),
+                "path": str(morsel["path"] or "/"), "secure": bool(morsel["secure"]),
+            })
     return out
 
 
-def run_webview_worker(conn, storage, icon, gui):
+def run_webview_worker(conn, storage, icon, gui, script_path):
+    if sys.stdout is None: sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None: sys.stderr = open(os.devnull, "w")
     try:
         import webview
+        capture = Path(script_path).read_text(encoding="utf-8")
+        Path(storage).mkdir(parents=True, exist_ok=True)
+        window = webview.create_window(
+            "CDA Free Player", "about:blank", width=980, height=720,
+            min_size=(640, 480), hidden=True, focus=True,
+            background_color="#101216", text_select=True,
+        )
     except Exception as exc:
-        conn.send({"type": "fatal", "error": f"pywebview import: {exc}"})
+        conn.send({"type": "fatal", "error": str(exc)})
         return
-
-    Path(storage).mkdir(parents=True, exist_ok=True)
-    window = webview.create_window(
-        "CDA Free Player",
-        "about:blank",
-        width=980,
-        height=720,
-        min_size=(640, 480),
-        hidden=True,
-        focus=True,
-        background_color="#101216",
-        text_select=True,
-    )
-    cancel = threading.Event()
-
-    def page_html():
-        try:
-            return window.evaluate_js(
-                "(function(){return document.documentElement ? "
-                "document.documentElement.outerHTML : '';})()"
-            ) or ""
-        except Exception:
-            return ""
-
-    def current_url():
-        try: return window.get_current_url() or ""
-        except Exception: return ""
-
-    def user_agent():
-        try: return window.evaluate_js("navigator.userAgent") or ""
-        except Exception: return ""
+    loaded = threading.Event()
+    window.events.loaded += loaded.set
 
     def fetch(req):
-        request_id = req.get("id")
-        url = req["url"]
-        cancel.clear()
-        conn.send({"type":"event","event":"loading","id":request_id,"url":url})
-        try: window.hide()
-        except Exception: pass
-        try: window.load_url(url)
-        except Exception as exc:
-            conn.send({"type":"result","id":request_id,"ok":False,"error":str(exc)})
-            return
-
-        deadline = time.monotonic() + 180
-        first_seen = time.monotonic()
-        interactive_shown = False
-        stable_non_challenge = 0
-        last_html = ""
+        request_id, url = req["id"], req["url"]
+        expect_player = req.get("expect_player", False)
+        conn.send({"type": "event", "event": "loading", "id": request_id, "url": url})
+        loaded.clear()
+        window.hide()
+        window.load_url(url)
+        deadline = time.monotonic() + 120
+        clean_since = 0
+        shown = False
+        html = ""
         while time.monotonic() < deadline:
-            if cancel.is_set():
-                try:
-                    window.hide(); window.load_url("about:blank")
-                except Exception: pass
-                conn.send({"type":"result","id":request_id,"ok":False,"cancelled":True})
-                return
-            time.sleep(0.18)
-            html = page_html()
-            if not html: continue
-            last_html = html
-            if is_challenge(html):
-                stable_non_challenge = 0
-                if not interactive_shown and time.monotonic() - first_seen >= 2.2:
-                    interactive_shown = True
-                    conn.send({"type":"event","event":"interactive","id":request_id,"url":current_url()})
-                    try:
-                        window.title = "CDA Free Player — Weryfikacja zabezpieczeń"
-                        window.show()
-                    except Exception: pass
+            if not loaded.wait(0.2): continue
+            time.sleep(0.2)
+            current_url = window.get_current_url() or ""
+            if urlparse(current_url).hostname not in ("cda.pl", "www.cda.pl", "m.cda.pl"):
                 continue
-            stable_non_challenge += 1
-            if stable_non_challenge < 2: continue
-            try:
-                window.hide(); window.title = "CDA Free Player"
-            except Exception: pass
-            conn.send({
-                "type":"result", "id":request_id, "ok":True,
-                "html":html, "url":current_url(), "user_agent":user_agent(),
-                "cookies":serialize_cookies(window.get_cookies()),
-                "interactive":interactive_shown,
-            })
-            return
-        try: window.hide()
-        except Exception: pass
-        conn.send({"type":"result","id":request_id,"ok":False,"error":"Timeout weryfikacji WebView","html":last_html[:1000]})
+            target, actual = urlparse(url).path, urlparse(current_url).path
+            if actual != target and not (expect_player and actual.startswith(target + "/")):
+                continue
+            state = window.evaluate_js("document.readyState")
+            if state != "complete": continue
+            if expect_player:
+                window.evaluate_js(capture)
+                raw = window.evaluate_js("window.__CDA_FP_READ_PLAYER ? window.__CDA_FP_READ_PLAYER() : ''")
+                if raw:
+                    html = "__CDA_PLAYER_DATA__" + raw
+                    break
+            html = window.evaluate_js("document.documentElement ? document.documentElement.outerHTML : ''") or ""
+            if is_challenge(html):
+                clean_since = 0
+                if not shown:
+                    shown = True
+                    conn.send({"type": "event", "event": "interactive", "id": request_id, "url": current_url})
+                    window.set_title("CDA Free Player - Weryfikacja zabezpieczeń")
+                    window.show()
+                continue
+            if not html: continue
+            if not clean_since: clean_since = time.monotonic()
+            settle = 12 if expect_player else 0.4
+            if time.monotonic() - clean_since >= settle: break
+        else:
+            raise RuntimeError("Przekroczono czas ładowania strony CDA")
+        user_agent = window.evaluate_js("navigator.userAgent") or ""
+        cookies = serialize_cookies(window.get_cookies())
+        window.hide()
+        window.set_title("CDA Free Player")
+        conn.send({"type": "result", "id": request_id, "ok": True, "html": html,
+                   "url": current_url, "user_agent": user_agent, "cookies": cookies})
 
     def command_loop():
-        conn.send({"type":"ready"})
+        conn.send({"type": "ready"})
         while True:
-            try: req = conn.recv()
+            try:
+                req = conn.recv()
             except (EOFError, OSError):
-                try: window.destroy()
-                except Exception: pass
+                window.destroy()
                 return
-            cmd = req.get("cmd")
-            if cmd == "fetch": fetch(req)
-            elif cmd == "cancel": cancel.set()
-            elif cmd == "quit":
-                try: window.destroy()
-                except Exception: pass
+            if req.get("cmd") == "quit":
+                window.destroy()
                 return
+            if req.get("cmd") == "fetch":
+                try:
+                    fetch(req)
+                except Exception as exc:
+                    window.hide()
+                    conn.send({"type": "result", "id": req.get("id"), "ok": False, "error": str(exc)})
 
-    kwargs = dict(private_mode=False, storage_path=storage, debug=False)
-    if icon and Path(icon).exists(): kwargs["icon"] = icon
     try:
-        webview.start(command_loop, gui=gui or None, **kwargs)
+        kwargs = dict(private_mode=False, storage_path=storage, debug=False)
+        if gui == "gtk" and icon and Path(icon).exists(): kwargs["icon"] = icon
+        webview.start(command_loop, gui=gui, **kwargs)
     except Exception as exc:
-        try: conn.send({"type":"fatal","error":f"webview start: {exc}"})
-        except Exception: pass
+        conn.send({"type": "fatal", "error": "WebView: " + str(exc)})

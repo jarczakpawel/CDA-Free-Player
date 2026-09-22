@@ -1,15 +1,24 @@
 #!/bin/sh
 set -eu
-python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
-pyinstaller --noconfirm --clean --windowed --name "cda-free-player" \
-  --icon "assets/cda-free-player.png" \
-  --add-data "assets:assets" \
-  --add-data "VERSION:." \
-  --hidden-import "webview.platforms.qt" \
-  --exclude-module "webview.platforms.android" \
-  --exclude-module "webview.platforms.gtk" \
-  --exclude-module "webview.platforms.cocoa" \
-  --exclude-module "webview.platforms.winforms" \
-  --exclude-module "webview.platforms.winui3" \
-  --exclude-module "webview.platforms.cef" \
-  desktop_entry.py
+ARCH="${1:-x64}"
+VERSION="$(tr -d '[:space:]' < VERSION)"
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+STAGE="$ROOT/build/linux-release/cda-free-player"
+OUT="$ROOT/release_out/CDA-Free-Player-Linux-${ARCH}-v${VERSION}.tar.gz"
+
+rm -rf "$ROOT/build/linux-release"
+mkdir -p "$STAGE" "$ROOT/release_out"
+cp -a "$ROOT/cda_free_player" "$STAGE/"
+mkdir -p "$STAGE/assets"
+cp "$ROOT/assets/cda-free-player.png" "$STAGE/assets/"
+cp -a "$ROOT/assets/web" "$STAGE/assets/"
+cp "$ROOT/VERSION" "$ROOT/desktop_entry.py" "$ROOT/requirements-linux.txt" "$STAGE/"
+cp "$ROOT/bootstrap-linux.sh" "$ROOT/run.sh" "$STAGE/"
+cp "$ROOT/packaging/cda-free-player.desktop" "$STAGE/"
+find "$STAGE" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$STAGE" -type f -name '*.pyc' -delete
+chmod +x "$STAGE/bootstrap-linux.sh" "$STAGE/run.sh"
+
+tar -C "$ROOT/build/linux-release" -czf "$OUT" cda-free-player
+test -s "$OUT"
+echo "$OUT"

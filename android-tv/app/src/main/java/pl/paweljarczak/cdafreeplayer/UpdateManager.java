@@ -50,6 +50,8 @@ public final class UpdateManager {
     private final Activity activity;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
+    private volatile boolean closed;
+    private boolean installing;
     private File pendingApk;
     private InstallCallback pendingInstallCallback;
 
@@ -58,12 +60,17 @@ public final class UpdateManager {
     }
 
     public void shutdown() {
+        closed = true;
+        main.removeCallbacksAndMessages(null);
         pendingApk = null;
         pendingInstallCallback = null;
         io.shutdownNow();
     }
 
-    /** Resume an update after the user grants "install unknown apps" permission. */
+    private void post(Runnable callback) {
+        main.post(() -> { if (!closed && !activity.isFinishing() && !activity.isDestroyed()) callback.run(); });
+    }
+
     public void onHostResume() {
         if (pendingApk == null || pendingInstallCallback == null) return;
         if (android.os.Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) return;
@@ -75,12 +82,13 @@ public final class UpdateManager {
     }
 
     public void check(CheckCallback callback) {
+        if (closed) return;
         io.execute(() -> {
             try {
                 UpdateInfo info = fetchLatest();
-                main.post(() -> callback.onResult(info));
+                post(() -> callback.onResult(info));
             } catch (Exception e) {
-                main.post(() -> callback.onError(e.getMessage() == null ? e.toString() : e.getMessage()));
+                post(() -> callback.onError(e.getMessage() == null ? e.toString() : e.getMessage()));
             }
         });
     }
@@ -99,6 +107,7 @@ public final class UpdateManager {
     }
 
     public void downloadAndInstall(UpdateInfo info, InstallCallback callback) {
+        if (closed || installing) return;
         if (info == null || !info.available || info.apkUrl.isEmpty()) {
             callback.onError("Brak pliku aktualizacji dla tego urządzenia.");
             return;
@@ -107,12 +116,17 @@ public final class UpdateManager {
             callback.onError("Ta aktualizacja wymaga Android API " + info.minSdk + " lub nowszego.");
             return;
         }
+        if (!info.sha256.matches("(?i)[0-9a-f]{64}")) {
+            callback.onError("Brak prawidłowej sumy SHA-256 aktualizacji.");
+            return;
+        }
+        installing = true;
         io.execute(() -> {
             try {
-                main.post(() -> callback.onStatus("Pobieranie aktualizacji…"));
+                post(() -> callback.onStatus("Pobieranie aktualizacji…"));
                 File dir = new File(activity.getCacheDir(), "updates");
                 if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Nie można utworzyć katalogu aktualizacji.");
-                File apk = new File(dir, info.apkName.isEmpty() ? "cda-free-player-update.apk" : info.apkName);
+                File apk = new File(dir, "cda-free-player-update.apk");
                 download(info.apkUrl, apk);
                 if (!info.sha256.isEmpty()) {
                     String got = sha256(apk);
@@ -121,12 +135,18 @@ public final class UpdateManager {
                         throw new SecurityException("SHA-256 pobranego APK nie zgadza się z release.");
                     }
                 }
-                main.post(() -> {
+                android.content.pm.PackageInfo archive = activity.getPackageManager().getPackageArchiveInfo(apk.getAbsolutePath(), 0);
+                if (archive == null || !activity.getPackageName().equals(archive.packageName) || archive.getLongVersionCode() <= BuildConfig.VERSION_CODE) {
+                    apk.delete();
+                    throw new IllegalStateException("APK nie jest nowszą wersją CDA Free Player.");
+                }
+                post(() -> {
+                    installing = false;
                     callback.onStatus("Pobrano. Otwieram instalator…");
                     requestInstall(apk, callback);
                 });
             } catch (Exception e) {
-                main.post(() -> callback.onError(e.getMessage() == null ? e.toString() : e.getMessage()));
+                post(() -> { installing = false; callback.onError(e.getMessage() == null ? e.toString() : e.getMessage()); });
             }
         });
     }
@@ -170,7 +190,6 @@ public final class UpdateManager {
             }
         }
 
-        // Fallback if a manifest is missing but the release has one universal Android TV APK.
         if (out.apkUrl.isEmpty() && assets != null) {
             for (int i = 0; i < assets.length(); i++) {
                 JSONObject a = assets.getJSONObject(i);
@@ -196,7 +215,13 @@ public final class UpdateManager {
             Toast.makeText(activity, "Włącz instalowanie z tego źródła. Po powrocie instalacja wznowi się automatycznie.", Toast.LENGTH_LONG).show();
             Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:" + activity.getPackageName()));
-            activity.startActivity(settings);
+            try {
+                activity.startActivity(settings);
+            } catch (RuntimeException e) {
+                pendingApk = null;
+                pendingInstallCallback = null;
+                callback.onError("Nie można otworzyć uprawnień instalatora na tym urządzeniu.");
+            }
             return;
         }
         installDownloadedApk(apk, callback);
@@ -225,11 +250,14 @@ public final class UpdateManager {
         c.setRequestProperty("X-GitHub-Api-Version", "2026-03-10");
         c.setRequestProperty("User-Agent", "CDA-Free-Player-Android-Updater");
         int code = c.getResponseCode();
-        if (code < 200 || code >= 300) throw new IllegalStateException("GitHub HTTP " + code);
+        if (code < 200 || code >= 300) { c.disconnect(); throw new IllegalStateException("GitHub HTTP " + code); }
         try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[16 * 1024];
             int n;
-            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+            while ((n = in.read(buf)) >= 0) {
+                if (Thread.currentThread().isInterrupted() || out.size() + n > 4 * 1024 * 1024) throw new java.io.IOException("Przerwano pobieranie danych aktualizacji");
+                out.write(buf, 0, n);
+            }
             return out.toString("UTF-8");
         } finally { c.disconnect(); }
     }
@@ -241,11 +269,14 @@ public final class UpdateManager {
         c.setInstanceFollowRedirects(true);
         c.setRequestProperty("User-Agent", "CDA-Free-Player-Android-Updater");
         int code = c.getResponseCode();
-        if (code < 200 || code >= 300) throw new IllegalStateException("Pobieranie APK: HTTP " + code);
+        if (code < 200 || code >= 300) { c.disconnect(); throw new IllegalStateException("Pobieranie APK: HTTP " + code); }
         try (InputStream in = c.getInputStream(); FileOutputStream fos = new FileOutputStream(out)) {
             byte[] buf = new byte[64 * 1024];
             int n;
-            while ((n = in.read(buf)) >= 0) fos.write(buf, 0, n);
+            while ((n = in.read(buf)) >= 0) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                fos.write(buf, 0, n);
+            }
             fos.getFD().sync();
         } finally { c.disconnect(); }
     }

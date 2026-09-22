@@ -4,19 +4,21 @@ import android.app.Activity;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.widget.FrameLayout;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.HashSet;
+import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class CdaRepository {
+    private static final String TAG = "CDAFP";
+
     public interface SearchListener {
         void onLoading(int page);
         void onPage(ArrayList<Movie> movies, int page, SearchPage stats);
@@ -27,7 +29,6 @@ public final class CdaRepository {
     public interface MetadataListener { void onMetadata(MovieMetadata md); void onError(String error); }
     public interface CommentsListener { void onComments(ArrayList<CommentItem> comments); void onError(String error); }
     public interface PlayerListener { void onPlayer(PlayerData data, MovieMetadata metadata); void onError(String error); }
-    public interface MetadataObserver { void onMetadata(Movie movie, MovieMetadata metadata); }
     public interface VerificationObserver { void onVerification(boolean interactive, boolean background); }
 
     private static final long PLAYER_CACHE_MS = 4L * 60 * 1000;
@@ -45,7 +46,9 @@ public final class CdaRepository {
         final PlayerData data;
         final MovieMetadata metadata;
         final long at;
-        CachedPlayer(PlayerData d, MovieMetadata m) { data = d; metadata = m; at = System.currentTimeMillis(); }
+        CachedPlayer(PlayerData d, MovieMetadata m) {
+            data = d; metadata = m; at = System.currentTimeMillis();
+        }
     }
 
     private final CdaDb db;
@@ -56,17 +59,19 @@ public final class CdaRepository {
         t.setPriority(Thread.NORM_PRIORITY - 1);
         return t;
     });
-    private final ArrayDeque<Movie> enrichQueue = new ArrayDeque<>();
-    private final HashSet<String> enrichPending = new HashSet<>();
-    private final LinkedHashMap<String, CachedPlayer> playerCache = new LinkedHashMap<String, CachedPlayer>(16, .75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<String, CachedPlayer> e) { return size() > PLAYER_CACHE_MAX; }
-    };
+    private final LinkedHashMap<String, CachedPlayer> playerCache =
+            new LinkedHashMap<String, CachedPlayer>(16, .75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, CachedPlayer> e) {
+                    return size() > PLAYER_CACHE_MAX;
+                }
+            };
 
-    private MetadataObserver metadataObserver;
     private VerificationObserver verificationObserver;
-    private boolean enrichBusy = false, enrichPaused = false, enrichVerifyBusy = false, playbackMode = false;
-    private RequestToken enrichToken, enrichVerifyToken;
-    private SearchSession active;
+    private boolean playbackMode = false;
+    private SearchSession active, suspended;
+    private RequestToken playerToken;
+    private volatile boolean closed;
+    private final Set<RequestToken> requests = new HashSet<>();
 
     public CdaRepository(Activity activity, FrameLayout overlay, FrameLayout host) {
         db = new CdaDb(activity);
@@ -75,15 +80,16 @@ public final class CdaRepository {
 
     public CdaDb db() { return db; }
     public CdaGateway gateway() { return gateway; }
-    public void setMetadataObserver(MetadataObserver o) { metadataObserver = o; }
     public void setVerificationObserver(VerificationObserver o) { verificationObserver = o; }
 
     public void cancelSearch() {
-        if (active != null) {
-            active.token.cancel();
-            active.loading = false;
+        SearchSession s = active;
+        active = null;
+        if (s != null) {
+            s.token.cancel();
+            s.loading = false;
+            gateway.webSession().cancel(s.token);
         }
-        gateway.webSession().cancelCurrent();
     }
 
     public void startSearch(String q, String sort, String duration, SearchListener listener) {
@@ -100,7 +106,7 @@ public final class CdaRepository {
 
     public void loadNext() {
         SearchSession s = active;
-        if (s == null || s.loading || s.done || s.token.isCancelled() || playbackMode) return;
+        if (closed || s == null || s.loading || s.done || s.token.isCancelled() || playbackMode) return;
         if (s.page > 20) {
             s.done = true;
             s.listener.onFinished("Limit 20 stron");
@@ -110,21 +116,49 @@ public final class CdaRepository {
         s.loading = true;
         s.listener.onLoading(page);
 
-        SearchPage cached = db.getSearch(s.key, page);
-        if (cached != null) {
-            parser.execute(() -> {
-                db.decorateLocalState(cached.movies);
-                main.post(() -> handlePage(s, page, cached));
+        parser.execute(() -> {
+            if (closed || s.token.isCancelled()) return;
+            SearchPage cached = db.getSearch(s.key, page);
+            if (cached != null) db.decorateLocalState(cached.movies);
+            main.post(() -> {
+                if (closed || s != active || s.token.isCancelled()) return;
+                if (cached != null) handlePage(s, page, cached);
+                else fetchSearchPage(s, page);
             });
-            return;
-        }
+        });
+    }
 
+    private void fetchSearchPage(SearchSession s, int page) {
         String url = searchUrl(s.query, s.sort, s.duration, page);
-        fetchSearchAttempt(s, page, url);
+        gateway.fetch(url, true, s.token, new CdaGateway.Callback() {
+            @Override public void onHtml(String html, boolean via) {
+                if (closed || s.token.isCancelled()) return;
+                parser.execute(() -> {
+                    if (closed || s.token.isCancelled()) return;
+                    SearchPage parsed = CdaParser.parseSearch(html);
+                    if (parsed.raw > 0 || !parsed.movies.isEmpty()) db.putSearch(s.key, page, parsed);
+                    db.decorateLocalState(parsed.movies);
+                    main.post(() -> handlePage(s, page, parsed));
+                });
+            }
+
+            @Override public void onError(String e) {
+                s.loading = false;
+                if (!closed && s == active && !s.token.isCancelled()) s.listener.onError(e);
+            }
+
+            @Override public void onChallengeRequired() {}
+
+            @Override public void onVerification(boolean interactive) {
+                if (closed || s != active || s.token.isCancelled()) return;
+                s.listener.onVerification(interactive);
+                notifyVerification(interactive, false);
+            }
+        });
     }
 
     private void handlePage(SearchSession s, int page, SearchPage p) {
-        if (s != active || s.token.isCancelled() || playbackMode) return;
+        if (closed || s != active || s.token.isCancelled() || playbackMode) return;
         s.loading = false;
         s.page = page + 1;
         if (p.raw == 0) {
@@ -133,42 +167,10 @@ public final class CdaRepository {
             return;
         }
         if (p.movies.isEmpty()) {
-            main.postDelayed(this::loadNext, 70);
+            main.postDelayed(() -> { if (s == active) loadNext(); }, 70);
             return;
         }
         s.listener.onPage(p.movies, page, p);
-        enqueueEnrichment(p.movies);
-    }
-
-    private void fetchSearchAttempt(SearchSession s, int page, String url) {
-        gateway.fetch(url, true, s.token, new CdaGateway.Callback() {
-            @Override public void onHtml(String html, boolean via) {
-                if (s.token.isCancelled()) return;
-                parser.execute(() -> {
-                    SearchPage parsed = CdaParser.parseSearch(html);
-                    // /p1 is now the canonical first page. Do not cache a transient
-                    // empty bootstrap/interstitial page.
-                    if (parsed.raw > 0 || !parsed.movies.isEmpty()) db.putSearch(s.key, page, parsed);
-                    db.decorateLocalState(parsed.movies);
-                    main.post(() -> {
-                        if (via) resumeEnrichment();
-                        handlePage(s, page, parsed);
-                    });
-                });
-            }
-
-            @Override public void onError(String e) {
-                s.loading = false;
-                if (!s.token.isCancelled()) s.listener.onError(e);
-            }
-
-            @Override public void onChallengeRequired() {}
-
-            @Override public void onVerification(boolean interactive) {
-                s.listener.onVerification(interactive);
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
-            }
-        });
     }
 
     private static String searchUrl(String q, String sort, String duration, int page) {
@@ -179,105 +181,26 @@ public final class CdaRepository {
 
     public void loadMetadata(Movie m, boolean allowWeb, MetadataListener listener) {
         MovieMetadata cached = db.getMetadata(m.id);
-        if (cached != null && !cached.description.isEmpty()) {
+        if (cached != null && cached.description != null && !cached.description.isEmpty()) {
             listener.onMetadata(cached);
             return;
         }
         RequestToken token = new RequestToken();
+        requests.add(token);
         gateway.fetch(m.url, allowWeb, token, new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
+                if (closed || token.isCancelled()) return;
                 parser.execute(() -> {
+                    if (closed || token.isCancelled()) return;
                     MovieMetadata md = CdaParser.parseMetadata(html);
-                    PlayerData pd = CdaParser.parsePlayerData(html);
                     db.saveMetadata(m.id, md);
-                    if (validPlayer(pd)) cachePlayer(m.id, pd, md);
-                    main.post(() -> {
-                        if (via) resumeEnrichment();
-                        listener.onMetadata(md);
-                    });
+                    deliver(token, () -> listener.onMetadata(md));
                 });
             }
-            @Override public void onError(String e) { listener.onError(e); }
-            @Override public void onChallengeRequired() { enrichPaused = true; listener.onError("Weryfikacja zabezpieczeń wymagana"); }
-            @Override public void onVerification(boolean interactive) {
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
-            }
+            @Override public void onError(String e) { deliver(token, () -> listener.onError(e)); }
+            @Override public void onChallengeRequired() { deliver(token, () -> listener.onError("Weryfikacja zabezpieczeń wymagana")); }
+            @Override public void onVerification(boolean interactive) { notifyVerification(interactive, false); }
         });
-    }
-
-    public void enqueueEnrichment(Collection<Movie> movies) {
-        if (playbackMode) return;
-        for (Movie m : movies) {
-            MovieMetadata md = db.getMetadata(m.id);
-            if (md != null && md.rating != null) continue;
-            if (enrichPending.add(m.id)) enrichQueue.add(m);
-        }
-        pumpEnrichment();
-    }
-
-    public void resumeEnrichment() {
-        if (playbackMode) return;
-        enrichPaused = false;
-        pumpEnrichment();
-    }
-
-    private void pumpEnrichment() {
-        if (playbackMode || enrichBusy || enrichPaused || enrichVerifyBusy) return;
-        Movie m = enrichQueue.poll();
-        if (m == null) return;
-        enrichBusy = true;
-        enrichToken = new RequestToken();
-        gateway.fetch(m.url, false, enrichToken, new CdaGateway.Callback() {
-            @Override public void onHtml(String html, boolean via) { parseEnrichment(m, html, 250); }
-            @Override public void onError(String e) { finishEnrichment(m, 600); }
-            @Override public void onChallengeRequired() {
-                enrichBusy = false;
-                verifyForEnrichment(m);
-            }
-            @Override public void onVerification(boolean interactive) {}
-        });
-    }
-
-    private void verifyForEnrichment(Movie m) {
-        if (playbackMode || enrichVerifyBusy) return;
-        enrichVerifyBusy = true;
-        enrichPaused = true;
-        enrichVerifyToken = new RequestToken();
-        if (verificationObserver != null) verificationObserver.onVerification(false, true);
-        gateway.fetch(m.url, true, enrichVerifyToken, new CdaGateway.Callback() {
-            @Override public void onHtml(String html, boolean via) {
-                enrichVerifyBusy = false;
-                enrichPaused = false;
-                parseEnrichment(m, html, 120);
-            }
-            @Override public void onError(String e) {
-                enrichPending.remove(m.id);
-                enrichVerifyBusy = false;
-                enrichPaused = true;
-            }
-            @Override public void onChallengeRequired() {}
-            @Override public void onVerification(boolean interactive) {
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, true);
-            }
-        });
-    }
-
-    private void parseEnrichment(Movie m, String html, long delay) {
-        parser.execute(() -> {
-            MovieMetadata md = CdaParser.parseMetadata(html);
-            db.saveMetadata(m.id, md);
-            main.post(() -> {
-                if (metadataObserver != null) metadataObserver.onMetadata(m, md);
-                finishEnrichment(m, delay);
-            });
-        });
-    }
-
-    private void finishEnrichment(Movie m, long delay) {
-        enrichPending.remove(m.id);
-        enrichBusy = false;
-        enrichToken = null;
-        if (!playbackMode && !enrichPaused) main.postDelayed(this::pumpEnrichment, delay);
     }
 
     public void loadComments(Movie m, CommentsListener listener) {
@@ -287,46 +210,59 @@ public final class CdaRepository {
             return;
         }
         RequestToken token = new RequestToken();
+        requests.add(token);
         gateway.fetch(m.url, true, token, new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
+                if (closed || token.isCancelled()) return;
                 parser.execute(() -> {
+                    if (closed || token.isCancelled()) return;
                     ArrayList<CommentItem> comments = CdaParser.parseComments(html);
                     db.saveComments(m.id, comments);
-                    main.post(() -> {
-                        if (via) resumeEnrichment();
-                        listener.onComments(comments);
-                    });
+                    deliver(token, () -> listener.onComments(comments));
                 });
             }
-            @Override public void onError(String e) { listener.onError(e); }
-            @Override public void onChallengeRequired() {}
-            @Override public void onVerification(boolean interactive) {
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
-            }
+            @Override public void onError(String e) { deliver(token, () -> listener.onError(e)); }
+            @Override public void onChallengeRequired() { deliver(token, () -> listener.onError("Weryfikacja zabezpieczeń wymagana")); }
+            @Override public void onVerification(boolean interactive) { notifyVerification(interactive, false); }
         });
     }
 
     public void loadPlayer(Movie m, PlayerListener listener) {
+        cancelPlayer();
+        SearchSession previous = active;
+        cancelSearch();
+        suspended = previous;
         CachedPlayer hit = getCachedPlayer(m.id);
         if (hit != null && validPlayer(hit.data)) {
+            Log.i(TAG, "player cache hit id=" + m.id);
             listener.onPlayer(hit.data, hit.metadata);
             return;
         }
         RequestToken token = new RequestToken();
-        fetchPlayerAttempt(m, token, listener, false);
+        playerToken = token;
+        requests.add(token);
+        fetchPlayerAttempt(m, token, listener, true);
     }
 
     private void fetchPlayerAttempt(Movie m, RequestToken token, PlayerListener listener, boolean forceWeb) {
+        long started = android.os.SystemClock.elapsedRealtime();
+        Log.i(TAG, "player fetch start id=" + m.id + " forceWeb=" + forceWeb);
+
         CdaGateway.Callback cb = new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
-                if (token.isCancelled()) return;
+                if (closed || token.isCancelled()) return;
                 parser.execute(() -> {
-                    MovieMetadata md = CdaParser.parseMetadata(html);
+                    if (closed || token.isCancelled()) return;
                     PlayerData parsed = CdaParser.parsePlayerData(html);
-                    db.saveMetadata(m.id, md);
+                    Log.i(TAG, "player parse id=" + m.id +
+                            " via=" + (via ? "webview" : "http") +
+                            " bytes=" + (html == null ? 0 : html.length()) +
+                            " found=" + (parsed != null) +
+                            " playable=" + (parsed != null && parsed.hasPlayableSource()) +
+                            " ms=" + (android.os.SystemClock.elapsedRealtime() - started));
 
-                    if (parsed != null && parsed.premium) {
-                        main.post(() -> listener.onError("Materiał Premium lub niedostępny"));
+                    if (parsed != null && (parsed.premium || (!parsed.type.isEmpty() && !"plain".equals(parsed.type)))) {
+                        playerFailure(token, listener, "Materiał Premium lub niedostępny");
                         return;
                     }
 
@@ -336,35 +272,34 @@ public final class CdaRepository {
                             resolved = gateway.resolvePlayer(m, resolved, token);
                         } catch (InterruptedException ignored) {
                             return;
-                        } catch (Exception ignored) {
-                            // A ready manifest/file can still be played even if the
-                            // optional videoGetLink quality resolver failed.
+                        } catch (Exception e) {
+                            Log.w(TAG, "videoGetLink resolver failed id=" + m.id + " " + e.getClass().getSimpleName());
                         }
                     }
 
                     if (resolved == null || !resolved.hasPlayableSource()) {
                         if (!forceWeb) {
-                            main.post(() -> fetchPlayerAttempt(m, token, listener, true));
+                            main.post(() -> { if (!closed && !token.isCancelled()) fetchPlayerAttempt(m, token, listener, true); });
                         } else {
                             PlayerData finalParsed = resolved;
-                            main.post(() -> listener.onError(playerError(finalParsed)));
+                            playerFailure(token, listener, playerError(finalParsed));
                         }
                         return;
                     }
 
+                    MovieMetadata md = new MovieMetadata();
+                    md.description = m.shortDescription == null ? "" : m.shortDescription;
                     PlayerData ready = resolved;
                     cachePlayer(m.id, ready, md);
-                    main.post(() -> {
-                        if (via) resumeEnrichment();
-                        listener.onPlayer(ready, md);
-                    });
+                    deliver(token, () -> { playerToken = null; listener.onPlayer(ready, md); });
                 });
             }
 
             @Override public void onError(String e) {
-                if (token.isCancelled()) return;
+                if (closed || token.isCancelled()) return;
+                Log.w(TAG, "player fetch error id=" + m.id + " forceWeb=" + forceWeb + " " + e);
                 if (!forceWeb) fetchPlayerAttempt(m, token, listener, true);
-                else listener.onError("Nie udało się przygotować odtwarzania: " + e);
+                else playerFailure(token, listener, "Nie udało się przygotować odtwarzania: " + e);
             }
 
             @Override public void onChallengeRequired() {
@@ -372,7 +307,7 @@ public final class CdaRepository {
             }
 
             @Override public void onVerification(boolean interactive) {
-                if (verificationObserver != null) verificationObserver.onVerification(interactive, false);
+                notifyVerification(interactive, false);
             }
         };
 
@@ -380,13 +315,51 @@ public final class CdaRepository {
         else gateway.fetch(m.url, true, token, cb);
     }
 
+    private void deliver(RequestToken token, Runnable callback) {
+        main.post(() -> {
+            requests.remove(token);
+            if (!closed && !token.isCancelled()) callback.run();
+        });
+    }
+
+    private void playerFailure(RequestToken token, PlayerListener listener, String error) {
+        deliver(token, () -> {
+            playerToken = null;
+            restoreSearch();
+            listener.onError(error);
+        });
+    }
+
+    public boolean isSearchLoading() { return active != null && active.loading; }
+
+    public void cancelPlayer() {
+        if (playerToken != null) {
+            RequestToken token = playerToken;
+            playerToken = null;
+            token.cancel();
+            requests.remove(token);
+            gateway.webSession().cancel(token);
+        }
+        restoreSearch();
+    }
+
+    private void restoreSearch() {
+        if (suspended == null || closed) return;
+        SearchSession old = suspended;
+        suspended = null;
+        SearchSession next = new SearchSession();
+        next.query = old.query; next.sort = old.sort; next.duration = old.duration;
+        next.key = old.key; next.page = old.page; next.done = old.done; next.listener = old.listener;
+        active = next;
+    }
+
     private static boolean validPlayer(PlayerData p) {
-        return p != null && !p.premium && p.hasPlayableSource();
+        return p != null && !p.premium && (p.type.isEmpty() || "plain".equals(p.type)) && p.hasPlayableSource();
     }
 
     private static String playerError(PlayerData p) {
-        if (p == null) return "Brak danych playera CDA";
-        if (p.premium) return "Materiał Premium lub niedostępny";
+        if (p == null) return "Brak danych playera CDA (WebView)";
+        if (p.premium || (!p.type.isEmpty() && !"plain".equals(p.type))) return "Materiał Premium lub niedostępny";
         if (p.canResolveQuality()) return "CDA nie zwróciło działającego linku do strumienia";
         return "Brak darmowego strumienia w danych playera";
     }
@@ -405,27 +378,30 @@ public final class CdaRepository {
         return c;
     }
 
-    /** Suspend all catalogue work and drop WebView renderer before full-screen video. */
+    private void notifyVerification(boolean interactive, boolean background) {
+        if (verificationObserver != null) verificationObserver.onVerification(interactive, background);
+    }
+
     public void enterPlaybackMode() {
         playbackMode = true;
         cancelSearch();
-        enrichPaused = true;
-        if (enrichToken != null) enrichToken.cancel();
-        if (enrichVerifyToken != null) enrichVerifyToken.cancel();
         gateway.releaseForPlayback();
     }
 
     public void exitPlaybackMode() {
-        if (!playbackMode) return;
         playbackMode = false;
-        enrichPaused = false;
-        pumpEnrichment();
+        restoreSearch();
     }
 
     public void shutdown() {
-        enterPlaybackMode();
-        parser.shutdownNow();
+        closed = true;
+        playbackMode = true;
+        if (active != null) active.token.cancel();
+        for (RequestToken token : requests) token.cancel();
+        requests.clear();
+        main.removeCallbacksAndMessages(null);
         gateway.shutdown();
-        db.close();
+        parser.execute(db::close);
+        parser.shutdown();
     }
 }

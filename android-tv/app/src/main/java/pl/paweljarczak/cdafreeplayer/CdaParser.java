@@ -3,6 +3,7 @@ package pl.paweljarczak.cdafreeplayer;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.jsoup.parser.Parser;
 import org.jsoup.select.Elements;
 import org.json.JSONObject;
 
@@ -14,6 +15,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class CdaParser {
+    public static final String PLAYER_DATA_PREFIX = "__CDA_PLAYER_DATA__";
     private static final Pattern VIDEO_ID = Pattern.compile("/video/([^/?#]+)");
     private static final Pattern RATING = Pattern.compile("(?<!\\d)([0-5](?:[.,]\\d{1,2})?)(?!\\d)");
     private static final Pattern CDA_FULL = Pattern.compile("(?i)(?<!\\d)([0-5](?:[.,]\\d{1,2})?)\\s*/\\s*5\\s*Oceny\\s*:\\s*(\\d+(?:[ .]\\d{3})*)");
@@ -21,12 +23,6 @@ public final class CdaParser {
 
     private CdaParser() {}
 
-    /**
-     * Parse both CDA desktop result cards and the lean/mobile card variants
-     * returned to Android WebView user agents. The strict desktop selector is
-     * kept as the fast path; the anchor fallback is only used when it finds no
-     * cards at all.
-     */
     public static SearchPage parseSearch(String html) {
         SearchPage page = new SearchPage();
         Document doc = Jsoup.parse(html == null ? "" : html);
@@ -44,8 +40,6 @@ public final class CdaParser {
             return page;
         }
 
-        // Android/mobile fallback. CDA has used several card wrappers over time,
-        // while the stable part is the /video/<id> destination itself.
         for (Element a : doc.select("a[href]")) {
             String href = normalizeHref(a.attr("href"));
             Matcher vm = VIDEO_ID.matcher(href);
@@ -154,7 +148,7 @@ public final class CdaParser {
 
     private static String imageFromTile(Element tile) {
         if (tile == null) return "";
-        Element img = tile.selectFirst("img.video-clip-image, img[data-src], img[data-original], img[src]");
+        Element img = tile.selectFirst("img.video-clip-image, img[data-src], img[data-original], img[src], img[srcset]");
         if (img == null) return "";
         String s = firstNonEmpty(img.attr("data-src"), img.attr("data-original"), img.attr("src"));
         if (s.isEmpty() && img.hasAttr("srcset")) {
@@ -190,6 +184,7 @@ public final class CdaParser {
             String cls = e.className().toLowerCase(Locale.ROOT);
             String id = e.id().toLowerCase(Locale.ROOT);
             if (cls.contains("premium") || id.contains("premium")) return true;
+            if ("true".equalsIgnoreCase(e.attr("data-premium")) || "1".equals(e.attr("data-premium"))) return true;
             for (String attr : new String[]{"data-premium", "data-type", "data-label", "data-badge", "aria-label", "title"}) {
                 if (e.hasAttr(attr) && e.attr(attr).toLowerCase(Locale.ROOT).contains("premium")) return true;
             }
@@ -252,10 +247,11 @@ public final class CdaParser {
             JSONObject root = findPlayerRoot(html, doc);
             if (root == null) return null;
             PlayerData p = new PlayerData();
-            p.premium = root.optBoolean("premium", false);
+            p.premium = root.optBoolean("premium", false) || root.optInt("premium", 0) == 1;
 
             JSONObject v = root.optJSONObject("video");
-            if (v == null) return p;
+            if (v == null) return null;
+            p.premium |= v.optBoolean("premium", false) || v.optInt("premium", 0) == 1;
 
             p.type = v.optString("type", "");
             p.dash = normalizeStreamUrl(v.optString("manifest", ""));
@@ -287,24 +283,26 @@ public final class CdaParser {
     }
 
     private static JSONObject findPlayerRoot(String html, Document doc) {
-        // Normal CDA desktop/mobile markup.
+        String rawHtml = html == null ? "" : html;
+
+        if (rawHtml.startsWith(PLAYER_DATA_PREFIX)) {
+            JSONObject direct = parsePlayerJson(rawHtml.substring(PLAYER_DATA_PREFIX.length()));
+            if (direct != null) return direct;
+        }
+
         for (String selector : new String[]{
                 "div[id^=mediaplayer][player_data]", "[player_data]",
                 "[data-player-data]", "[data-player_data]"}) {
-            Element el = doc.selectFirst(selector);
-            if (el == null) continue;
+            for (Element el : doc.select(selector)) {
             for (String attr : new String[]{"player_data", "data-player-data", "data-player_data"}) {
                 String raw = el.attr(attr);
                 if (raw == null || raw.trim().isEmpty()) continue;
-                try { return new JSONObject(raw); } catch (Exception ignored) {}
+                JSONObject parsed = parsePlayerJson(raw);
+                if (parsed != null) return parsed;
+            }
             }
         }
 
-        // Some Android/mobile variants keep the same object in JavaScript
-        // instead of leaving player_data on the media-player DIV. Extract a
-        // balanced object after player_data/playerData without trying to parse
-        // arbitrary page scripts.
-        String rawHtml = html == null ? "" : html;
         for (String marker : new String[]{"player_data", "playerData", "\\\"player_data\\\""}) {
             int from = 0;
             while (from < rawHtml.length()) {
@@ -316,13 +314,33 @@ public final class CdaParser {
                     if (brace >= 0) {
                         String object = balancedJsonObject(rawHtml, brace);
                         if (object != null) {
-                            try { return new JSONObject(object); } catch (Exception ignored) {}
+                            JSONObject parsed = parsePlayerJson(object);
+                            if (parsed != null) return parsed;
                         }
                     }
                 }
                 from = at + marker.length();
             }
         }
+        return null;
+    }
+
+
+    private static JSONObject parsePlayerJson(String raw) {
+        if (raw == null) return null;
+        String value = raw.trim();
+        if (value.isEmpty()) return null;
+        try {
+            JSONObject parsed = new JSONObject(value);
+            if (parsed.optJSONObject("video") != null) return parsed;
+        } catch (Exception ignored) {}
+        try {
+            String unescaped = Parser.unescapeEntities(value, false).trim();
+            if (!unescaped.equals(value)) {
+                JSONObject parsed = new JSONObject(unescaped);
+                if (parsed.optJSONObject("video") != null) return parsed;
+            }
+        } catch (Exception ignored) {}
         return null;
     }
 
@@ -379,7 +397,7 @@ public final class CdaParser {
         if (url == null) return "";
         String out = url.trim();
         if (out.startsWith("//")) return "https:" + out;
-        return out;
+        return out.startsWith("https://") || out.startsWith("http://") ? out : "";
     }
 
     private static String clean(String html){if(html==null)return "";String s=html.replace("\\n","\n").replace("\\r","").replace("\\t"," ").replace("\\u003C","<").replace("\\u003E",">");Document d=Jsoup.parseBodyFragment(s);d.select("script,style,noscript,button").remove();String t=d.body().wholeText();return t.replace('\u00a0',' ').replaceAll("[ \\t]+"," ").replaceAll("\\n{3,}","\\n\\n").trim();}

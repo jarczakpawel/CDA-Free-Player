@@ -31,8 +31,8 @@ def _state_dir():
 
 STATE_DIR = _state_dir()
 
-# One-time migration from the pre-1.0 development builds.  This keeps the
-# user's history/favourites/session when switching from the old CDA TV name.
+                                                                         
+                                                                            
 _legacy_dirs = [
     Path.home() / ".local" / "share" / "cda-tv",
 ]
@@ -53,7 +53,7 @@ LOG_DIR = STATE_DIR / "logs"
 THUMB_DIR = STATE_DIR / "thumbs"
 LOG_FILE = LOG_DIR / "cda-free-player.log"
 
-# Rename the development database in-place after migrating the directory.
+                                                                         
 _legacy_db = STATE_DIR / "cda-tv.db"
 if not DB_FILE.exists() and _legacy_db.exists():
     try:

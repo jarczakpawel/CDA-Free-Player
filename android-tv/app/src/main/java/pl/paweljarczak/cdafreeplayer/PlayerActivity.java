@@ -8,10 +8,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.webkit.CookieManager;
-import android.webkit.WebSettings;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -21,6 +21,7 @@ import android.widget.Toast;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.C;
+import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
@@ -71,6 +72,7 @@ public final class PlayerActivity extends Activity {
     private long initialResume = 0, lastPeriodicSave = 0;
     private int sourceIndex = 0;
     private Runnable tick, hideOsd, hideHint;
+    private boolean resumePlaying = true, readyToSave, fatalError;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -106,7 +108,7 @@ public final class PlayerActivity extends Activity {
         movie.duration = safe(i.getStringExtra("durationText")); movie.imageUrl = safe(i.getStringExtra("image"));
         dash = safe(i.getStringExtra("dash")); hls = safe(i.getStringExtra("hls")); direct = safe(i.getStringExtra("direct"));
         resolved = safe(i.getStringExtra("resolved")); resolvedKind = safe(i.getStringExtra("resolvedKind"));
-        initialResume = i.getLongExtra("resume", 0);
+        initialResume = Math.max(0, i.getLongExtra("resume", 0));
         metadata.description = safe(i.getStringExtra("description"));
         if (i.hasExtra("rating")) metadata.rating = i.getDoubleExtra("rating", 0);
         if (i.hasExtra("cdaVotes")) metadata.cdaVotes = i.getIntExtra("cdaVotes", 0);
@@ -122,7 +124,7 @@ public final class PlayerActivity extends Activity {
         headers.put("Referer", movie.url);
 
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent(WebSettings.getDefaultUserAgent(this))
+                .setUserAgent(CdaBrowserIdentity.userAgent(this))
                 .setDefaultRequestProperties(headers)
                 .setConnectTimeoutMs(10_000)
                 .setReadTimeoutMs(20_000)
@@ -136,10 +138,12 @@ public final class PlayerActivity extends Activity {
                 .build();
 
         DefaultRenderersFactory renderers = new DefaultRenderersFactory(this);
-        if (Build.VERSION.SDK_INT <= 30) renderers.forceEnableMediaCodecAsynchronousQueueing();
+        renderers.setEnableDecoderFallback(true);
 
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(load)
+                .setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+                .setHandleAudioBecomingNoisy(true)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(data))
                 .build();
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
@@ -148,20 +152,35 @@ public final class PlayerActivity extends Activity {
         playerView.setUseController(false);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
         playerView.setKeepContentOnPlayerReset(true);
-        playerView.setKeepScreenOn(true);
+        playerView.setKeepScreenOn(false);
         playerView.setPlayer(player);
         playerView.requestFocus();
 
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
-                long position = Math.max(initialResume, player.getCurrentPosition());
+                if (player == null) return;
+                saveProgress();
+                Log.w("CDAFP", "Media3 error=" + error.getErrorCodeName() + "; source=" + sourceIndex);
+                long position = readyToSave ? Math.max(0, player.getCurrentPosition()) : initialResume;
                 if (sourceIndex + 1 < sources.size()) {
                     sourceIndex++;
                     prepareSource(sourceIndex, position);
                 } else {
+                    fatalError = true;
+                    playerView.setKeepScreenOn(false);
                     Toast.makeText(PlayerActivity.this,
                             "Błąd odtwarzania: " + error.getErrorCodeName(), Toast.LENGTH_LONG).show();
                 }
+            }
+            @Override public void onPlaybackStateChanged(int state) {
+                if (state == Player.STATE_READY || state == Player.STATE_ENDED) readyToSave = true;
+                if (state == Player.STATE_ENDED) saveProgress();
+                playerView.setKeepScreenOn(player != null && player.getPlayWhenReady() &&
+                        (state == Player.STATE_BUFFERING || state == Player.STATE_READY));
+            }
+            @Override public void onPlayWhenReadyChanged(boolean play, int reason) {
+                playerView.setKeepScreenOn(play && player != null && !fatalError &&
+                        (player.getPlaybackState() == Player.STATE_READY || player.getPlaybackState() == Player.STATE_BUFFERING));
             }
             @Override public void onTracksChanged(Tracks tracks) { updateQualityLabel(); }
         });
@@ -195,14 +214,17 @@ public final class PlayerActivity extends Activity {
     private void prepareSource(int index, long start) {
         if (index < 0 || index >= sources.size()) return;
         sourceIndex = index;
+        initialResume = Math.max(0, start);
+        readyToSave = false;
+        fatalError = false;
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO).build());
         Source src = sources.get(index);
         MediaItem.Builder b = new MediaItem.Builder().setUri(Uri.parse(src.url));
         if ("dash".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_MPD);
         else if ("hls".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_M3U8);
-        player.setMediaItem(b.build(), true);
+        player.setMediaItem(b.build(), Math.max(0, start));
         player.prepare();
-        if (start > 5_000) player.seekTo(start);
-        player.play();
+        player.setPlayWhenReady(resumePlaying);
     }
 
     private void setupOsd() {
@@ -215,7 +237,7 @@ public final class PlayerActivity extends Activity {
             resetHide();
         });
         description.setContentDescription("Opis");
-        description.setOnClickListener(v -> { TvDialogs.text(this, "Opis", metadata.description); resetHide(); });
+        description.setOnClickListener(v -> loadDescription());
         updateCommentsDescription(metadata.commentCount);
         comments.setOnClickListener(v -> loadComments());
         quality.setOnClickListener(v -> showQuality());
@@ -225,11 +247,18 @@ public final class PlayerActivity extends Activity {
         }
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar b, int p, boolean user) { if (user && scrubbing) updateTimeLabels(p * 1000L, player.getDuration()); }
-            @Override public void onStartTrackingTouch(SeekBar b) { scrubbing = true; }
+            @Override public void onStartTrackingTouch(SeekBar b) { scrubbing = true; h.removeCallbacks(hideOsd); }
             @Override public void onStopTrackingTouch(SeekBar b) { player.seekTo(b.getProgress() * 1000L); scrubbing = false; resetHide(); }
         });
         seek.setOnKeyListener((v, key, e) -> {
             if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) {
+                if (e.getRepeatCount() == 0) {
+                    if (player.getPlayWhenReady()) player.pause(); else player.play();
+                }
+                resetHide();
+                return true;
+            }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
                 seekBy((key == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1) * stepForRepeat(e.getRepeatCount())); return true;
             }
@@ -244,6 +273,7 @@ public final class PlayerActivity extends Activity {
         }
 
         tick = () -> {
+            if (player == null) return;
             long d = player.getDuration(), p = player.getCurrentPosition();
             if (d > 0 && !scrubbing) {
                 seek.setMax((int) Math.min(Integer.MAX_VALUE, d / 1000));
@@ -251,8 +281,8 @@ public final class PlayerActivity extends Activity {
             }
             updateTimeLabels(p, d);
             long now = android.os.SystemClock.elapsedRealtime();
-            if (d > 0 && now - lastPeriodicSave >= 30_000) {
-                db.saveHistory(movie, p, d);
+            if (d > 0 && now - lastPeriodicSave >= 5_000) {
+                saveProgress();
                 lastPeriodicSave = now;
             }
             h.postDelayed(tick, 500);
@@ -296,6 +326,30 @@ public final class PlayerActivity extends Activity {
         return hh > 0 ? String.format(Locale.US, "%d:%02d:%02d", hh, mm, s % 60) : String.format(Locale.US, "%d:%02d", mm, s % 60);
     }
 
+
+    private void loadDescription() {
+        MovieMetadata cached = db.getMetadata(movie.id);
+        if (cached != null && cached.description != null && !cached.description.isEmpty()) {
+            metadata.description = cached.description;
+            TvDialogs.text(this, "Opis", metadata.description);
+            resetHide();
+            return;
+        }
+        description.setContentDescription("Opis — wczytywanie");
+        repo.loadMetadata(movie, true, new CdaRepository.MetadataListener() {
+            @Override public void onMetadata(MovieMetadata md) {
+                if (md != null && md.description != null && !md.description.isEmpty()) metadata.description = md.description;
+                description.setContentDescription("Opis");
+                TvDialogs.text(PlayerActivity.this, "Opis", metadata.description);
+                resetHide();
+            }
+            @Override public void onError(String e) {
+                description.setContentDescription("Opis");
+                Toast.makeText(PlayerActivity.this, e, Toast.LENGTH_LONG).show();
+                resetHide();
+            }
+        });
+    }
     private void loadComments() {
         comments.setContentDescription("Komentarze — wczytywanie");
         repo.loadComments(movie, new CdaRepository.CommentsListener() {
@@ -330,6 +384,7 @@ public final class PlayerActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
+        if (player == null) return super.dispatchKeyEvent(e);
         if (repo.gateway().webSession().isInteractive()) {
             if (e.getAction() == KeyEvent.ACTION_DOWN && e.getKeyCode() == KeyEvent.KEYCODE_BACK) {
                 repo.gateway().webSession().cancelCurrent(); return true;
@@ -338,21 +393,63 @@ public final class PlayerActivity extends Activity {
         }
         if (e.getAction() == KeyEvent.ACTION_DOWN) {
             int k = e.getKeyCode();
+            if (k == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE && osdVisible) {
+                if (e.getRepeatCount() == 0) {
+                    if (player.getPlayWhenReady()) player.pause(); else player.play();
+                }
+                return true;
+            }
             if (!osdVisible && (k == KeyEvent.KEYCODE_DPAD_LEFT || k == KeyEvent.KEYCODE_DPAD_RIGHT)) {
                 seekBy((k == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1) * stepForRepeat(e.getRepeatCount())); return true;
             }
             if (k == KeyEvent.KEYCODE_DPAD_UP && !osdVisible) { showOsd(); return true; }
-            if ((k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER) && !osdVisible) {
-                if (player.isPlaying()) player.pause(); else player.play(); return true;
+            if ((k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_NUMPAD_ENTER || k == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) && !osdVisible) {
+                if (e.getRepeatCount() == 0) {
+                    if (player.getPlayWhenReady()) player.pause();
+                    else { if (player.getPlaybackState() == Player.STATE_ENDED) player.seekTo(0); player.play(); }
+                }
+                return true;
+            }
+            if (k == KeyEvent.KEYCODE_MEDIA_PLAY) { player.play(); return true; }
+            if (k == KeyEvent.KEYCODE_MEDIA_PAUSE) { player.pause(); return true; }
+            if (k == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD || k == KeyEvent.KEYCODE_MEDIA_REWIND) {
+                seekBy((k == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ? 1 : -1) * stepForRepeat(e.getRepeatCount())); return true;
             }
             if (k == KeyEvent.KEYCODE_BACK && osdVisible) { hideOsd(); return true; }
         }
-        return playerView.dispatchKeyEvent(e) || super.dispatchKeyEvent(e);
+        return super.dispatchKeyEvent(e);
+    }
+
+    private void saveProgress() {
+        if (player != null && db != null && readyToSave && player.getDuration() > 0) {
+            db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (repo != null && player == null && !sources.isEmpty()) {
+            setupPlayer();
+            prepareSource(sourceIndex, initialResume);
+            h.post(tick);
+            seekHint.setVisibility(View.GONE);
+            if (osdVisible) resetHide();
+        }
     }
 
     @Override
     protected void onStop() {
-        if (player != null && db != null) db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
+        h.removeCallbacksAndMessages(null);
+        if (player != null) {
+            saveProgress();
+            if (readyToSave) initialResume = Math.max(0, player.getCurrentPosition());
+            resumePlaying = player.getPlayWhenReady();
+            playerView.setPlayer(null);
+            playerView.setKeepScreenOn(false);
+            player.release();
+            player = null;
+        }
         super.onStop();
     }
 
@@ -360,8 +457,9 @@ public final class PlayerActivity extends Activity {
     protected void onDestroy() {
         h.removeCallbacksAndMessages(null);
         if (player != null) {
-            if (db != null) db.saveHistory(movie, player.getCurrentPosition(), player.getDuration());
+            saveProgress();
             player.release();
+            player = null;
         }
         if (repo != null) repo.shutdown();
         super.onDestroy();

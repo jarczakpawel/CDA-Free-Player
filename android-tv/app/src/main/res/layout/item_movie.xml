@@ -45,24 +45,13 @@
         android:ellipsize="end"
         android:paddingTop="5dp"/>
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/cardDuration"
         android:layout_width="match_parent"
-        android:layout_height="28dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-        <TextView
-            android:id="@+id/cardDuration"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:textColor="@color/muted"
-            android:textSize="11sp"/>
-        <pl.paweljarczak.cdafreeplayer.StarRatingView
-            android:id="@+id/cardStars"
-            android:layout_width="90dp"
-            android:layout_height="22dp"
-            android:visibility="gone"/>
-    </LinearLayout>
+        android:layout_height="22dp"
+        android:gravity="center_vertical"
+        android:textColor="@color/muted"
+        android:textSize="11sp"/>
 
     <ProgressBar
         android:id="@+id/cardProgress"

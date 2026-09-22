@@ -9,8 +9,8 @@ tag = f"v{version}"
 out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "release-files")
 
 names = {
-    "linux-x64": f"CDA-Free-Player-Linux-x64-{tag}.AppImage",
-    "linux-arm64": f"CDA-Free-Player-Linux-arm64-{tag}.AppImage",
+    "linux-x64": f"CDA-Free-Player-Linux-x64-{tag}.tar.gz",
+    "linux-arm64": f"CDA-Free-Player-Linux-arm64-{tag}.tar.gz",
     "windows-x64": f"CDA-Free-Player-Windows-x64-{tag}.zip",
     "macos-x64": f"CDA-Free-Player-macOS-x64-{tag}.zip",
     "macos-arm64": f"CDA-Free-Player-macOS-arm64-{tag}.zip",

@@ -122,44 +122,17 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:maxLines="3"
-                    android:paddingTop="8dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="2dp"
                     android:textColor="@color/text"
                     android:textSize="16sp"
                     android:textStyle="bold"/>
-
-                <LinearLayout
-                    android:id="@+id/detailRatingRow"
-                    android:layout_width="match_parent"
-                    android:layout_height="32dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <pl.paweljarczak.cdafreeplayer.StarRatingView
-                        android:id="@+id/detailStars"
-                        android:layout_width="116dp"
-                        android:layout_height="28dp"
-                        android:visibility="gone"/>
-
-                    <TextView
-                        android:id="@+id/detailRatingExact"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textColor="@color/text"
-                        android:textStyle="bold"/>
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/detailSources"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="@color/muted"
-                    android:textSize="11sp"/>
 
                 <TextView
                     android:id="@+id/detailTime"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:paddingTop="3dp"
+                    android:paddingTop="0dp"
                     android:textColor="@color/muted"
                     android:textSize="11sp"/>
 
@@ -167,7 +140,7 @@
                     android:id="@+id/detailActions"
                     android:layout_width="match_parent"
                     android:layout_height="44dp"
-                    android:layout_marginTop="5dp"
+                    android:layout_marginTop="2dp"
                     android:gravity="start|center_vertical"
                     android:orientation="horizontal">
 

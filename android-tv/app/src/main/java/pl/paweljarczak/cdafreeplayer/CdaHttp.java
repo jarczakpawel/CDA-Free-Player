@@ -2,7 +2,6 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.content.Context;
 import android.webkit.CookieManager;
-import android.webkit.WebSettings;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -30,13 +29,9 @@ public final class CdaHttp {
     }
 
     public String userAgent() {
-        return WebSettings.getDefaultUserAgent(context);
+        return CdaBrowserIdentity.userAgent(context);
     }
 
-    /**
-     * A fresh Android install is bootstrapped through WebView. A naked HTTP 200
-     * can be a consent/bootstrap page instead of the actual CDA catalogue.
-     */
     public boolean hasSession(String url) {
         try {
             String cookie = CookieManager.getInstance().getCookie(url);
@@ -49,24 +44,23 @@ public final class CdaHttp {
     public Result get(String url, RequestToken token) throws Exception {
         checkCancelled(token);
         HttpURLConnection c = open(url, "GET", "https://www.cda.pl/");
-        int status = c.getResponseCode();
-        String body = readBody(c, status, token);
-        syncCookies(url, c);
-
-        Result r = new Result();
-        r.status = status;
-        r.body = body;
-        r.challenge = isChallenge(status, body);
-        c.disconnect();
-        return r;
+        try {
+            if (token != null) token.attach(c);
+            int status = c.getResponseCode();
+            String body = readBody(c, status, token);
+            syncCookies(url, c);
+            Result r = new Result();
+            r.status = status;
+            r.body = body;
+            r.challenge = isChallenge(status, body);
+            if (!r.challenge && (status < 200 || status >= 300)) throw new java.io.IOException("CDA HTTP " + status);
+            return r;
+        } finally {
+            if (token != null) token.detach(c);
+            c.disconnect();
+        }
     }
 
-    /**
-     * Resolve one quality exactly like the proven desktop client: JSON-RPC
-     * videoGetLink against the public movie page, using the same WebView cookie
-     * jar, User-Agent and Referer. This does not bypass Premium; callers reject
-     * player_data.premium before this method is reached.
-     */
     public String videoGetLink(String pageUrl, String videoId, PlayerData data,
                                Object qualityValue, RequestToken token) throws Exception {
         checkCancelled(token);
@@ -88,30 +82,26 @@ public final class CdaHttp {
         HttpURLConnection c = open(pageUrl, "POST", pageUrl);
         c.setDoOutput(true);
         c.setRequestProperty("Accept", "application/json, text/plain, */*");
-        // Match the already proven desktop request as closely as possible.
         c.setRequestProperty("Content-Type", "application/json");
         c.setRequestProperty("X-Requested-With", "XMLHttpRequest");
         c.setFixedLengthStreamingMode(payload.length);
 
-        try (OutputStream out = c.getOutputStream()) {
-            out.write(payload);
-        }
-
-        int status = c.getResponseCode();
-        String body = readBody(c, status, token);
-        syncCookies(pageUrl, c);
-        c.disconnect();
-        if (status != 200 || body.isEmpty()) return "";
-
         try {
+            if (token != null) token.attach(c);
+            try (OutputStream out = c.getOutputStream()) { out.write(payload); }
+            int status = c.getResponseCode();
+            String body = readBody(c, status, token);
+            syncCookies(pageUrl, c);
+            if (status != 200 || body.isEmpty()) return "";
             JSONObject root = new JSONObject(body);
             JSONObject result = root.optJSONObject("result");
             if (result == null) return "";
             String state = result.optString("status", "");
             if (!state.isEmpty() && !"ok".equalsIgnoreCase(state)) return "";
             return normalizeStreamUrl(result.optString("resp", ""));
-        } catch (Exception ignored) {
-            return "";
+        } finally {
+            if (token != null) token.detach(c);
+            c.disconnect();
         }
     }
 
@@ -143,6 +133,7 @@ public final class CdaHttp {
                 int n;
                 while ((n = src.read(buf)) > 0) {
                     checkCancelled(token);
+                    if (b.size() + n > 8 * 1024 * 1024) throw new java.io.IOException("Odpowiedź CDA jest zbyt duża");
                     b.write(buf, 0, n);
                 }
             }
@@ -151,7 +142,7 @@ public final class CdaHttp {
     }
 
     private static void checkCancelled(RequestToken token) throws InterruptedException {
-        if (token != null && token.isCancelled()) throw new InterruptedException();
+        if (Thread.currentThread().isInterrupted() || token != null && token.isCancelled()) throw new InterruptedException();
     }
 
     private static String normalizeStreamUrl(String url) {

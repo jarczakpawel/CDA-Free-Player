@@ -282,7 +282,12 @@ class Database:
             return None
 
         try:
-            return json.loads(row[0])
+            data = json.loads(row[0])
+            if isinstance(data, dict) and "items" in data and "stats" in data:
+                return data
+            if isinstance(data, list) and data:
+                return {"items": data, "stats": {"raw": len(data), "free": len(data), "premium": 0, "nonvideo": 0}}
+            return None
         except Exception:
             return None
 

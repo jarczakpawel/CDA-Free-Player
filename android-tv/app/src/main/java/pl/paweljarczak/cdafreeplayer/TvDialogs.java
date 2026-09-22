@@ -81,6 +81,7 @@ public final class TvDialogs {
                 .setPositiveButton("Tak", (d, w) -> { if (yes != null) yes.run(); })
                 .create();
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus());
+        dialog.setOnCancelListener(x -> { if (no != null) no.run(); });
         dialog.show();
     }
 

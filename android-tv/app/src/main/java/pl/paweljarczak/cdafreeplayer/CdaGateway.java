@@ -29,6 +29,7 @@ public final class CdaGateway {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final CdaHttp http;
     private final CdaWebSession web;
+    private volatile boolean closed;
 
     public CdaGateway(Activity a, FrameLayout overlay, FrameLayout host) {
         http = new CdaHttp(a);
@@ -39,8 +40,7 @@ public final class CdaGateway {
     public CdaWebSession webSession() { return web; }
 
     public void fetch(String url, boolean allowWeb, RequestToken token, Callback cb) {
-        // A fresh install is bootstrapped through WebView so HTTP and WebView use
-        // the same real CDA session/cookies from the beginning.
+        if (closed || token != null && token.isCancelled()) return;
         if (allowWeb && !http.hasSession(url)) {
             fetchWeb(url, token, cb);
             return;
@@ -51,50 +51,43 @@ public final class CdaGateway {
                 CdaHttp.Result result = http.get(url, token);
                 if (token != null && token.isCancelled()) return;
                 if (!result.challenge) {
-                    main.post(() -> cb.onHtml(result.body, false));
+                    post(token, () -> cb.onHtml(result.body, false));
                     return;
                 }
                 if (!allowWeb) {
-                    main.post(cb::onChallengeRequired);
+                    post(token, cb::onChallengeRequired);
                     return;
                 }
-                main.post(() -> fetchWeb(url, token, cb));
+                post(token, () -> fetchWeb(url, token, cb));
             } catch (InterruptedException ignored) {
             } catch (Exception e) {
-                main.post(() -> cb.onError(e.toString()));
+                post(token, () -> cb.onError(e.toString()));
             }
         });
     }
 
     public void fetchWeb(String url, RequestToken token, Callback cb) {
-        main.post(() -> web.fetch(url, token, bridge(cb)));
+        post(token, () -> web.fetch(url, token, bridge(token, cb)));
     }
 
-    /** Force WebView and wait for player_data/stream markup, not only page load. */
     public void fetchPlayerWeb(String url, RequestToken token, Callback cb) {
-        main.post(() -> web.fetchPlayer(url, token, bridge(cb)));
+        post(token, () -> web.fetchPlayer(url, token, bridge(token, cb)));
     }
 
-    private CdaWebSession.Callback bridge(Callback cb) {
+    private CdaWebSession.Callback bridge(RequestToken token, Callback cb) {
         return new CdaWebSession.Callback() {
-            @Override public void onHtml(String html) { cb.onHtml(html, true); }
-            @Override public void onError(String e) { cb.onError(e); }
-            @Override public void onVerification(boolean interactive) { cb.onVerification(interactive); }
+            @Override public void onHtml(String html) { if (!closed && (token == null || !token.isCancelled())) cb.onHtml(html, true); }
+            @Override public void onError(String e) { if (!closed && (token == null || !token.isCancelled())) cb.onError(e); }
+            @Override public void onVerification(boolean interactive) { if (!closed && (token == null || !token.isCancelled())) cb.onVerification(interactive); }
         };
     }
 
-    /**
-     * Port of the desktop player's working resolver. CDA often exposes a
-     * qualities/hash2/ts tuple instead of a ready manifest on Android. Resolve
-     * the highest advertised free quality through the public videoGetLink call,
-     * then keep manifest/HLS/file as fallback sources for Media3.
-     */
     public PlayerData resolvePlayer(Movie movie, PlayerData input, RequestToken token) throws Exception {
         if (input == null) return null;
         PlayerData p = input.copy();
         if (p.premium) return p;
 
-        if (p.canResolveQuality()) {
+        if (!p.hasPlayableSource() && p.canResolveQuality()) {
             ArrayList<Map.Entry<String, Object>> candidates = new ArrayList<>(p.qualities.entrySet());
             candidates.sort(Comparator.comparingInt((Map.Entry<String, Object> e) -> qualityHeight(e.getKey())).reversed());
             for (Map.Entry<String, Object> candidate : candidates) {
@@ -125,9 +118,15 @@ public final class CdaGateway {
         return "direct";
     }
 
+    private void post(RequestToken token, Runnable callback) {
+        main.post(() -> { if (!closed && (token == null || !token.isCancelled())) callback.run(); });
+    }
+
     public void releaseForPlayback() { web.releaseForPlayback(); }
 
     public void shutdown() {
+        closed = true;
+        main.removeCallbacksAndMessages(null);
         net.shutdownNow();
         web.destroy();
     }

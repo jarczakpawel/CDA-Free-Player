@@ -15,3 +15,5 @@ android-tv/local.properties
 android-tv/*.jks
 android-tv/*.keystore
 *.icns
+release_out/
+.venv-ci/

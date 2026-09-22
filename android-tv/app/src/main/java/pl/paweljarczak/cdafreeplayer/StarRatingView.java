@@ -18,8 +18,6 @@ public final class StarRatingView extends View {
         super(c, a);
         white.setColor(Color.WHITE);
         gold.setColor(Color.rgb(255, 210, 46));
-        // Keep hardware acceleration. Five tiny vector stars are cheaper on GPU
-        // than forcing a software layer on every RecyclerView card.
     }
 
     public void setRating(Double r) {

@@ -44,9 +44,8 @@ public final class MainActivity extends Activity {
     private LinearLayout navPanel, detailPanel, yearRow;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
-    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailSources, detailTime, detailDescriptionPreview, detailRatingExact;
+    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailDescriptionPreview;
     private ImageView detailThumb;
-    private StarRatingView detailStars;
     private ImageButton detailFavorite, detailDescription, detailComments, filterButton;
     private Button recent, favorites, manualSearch, settingsButton, removeCollection;
     private EditText manualQuery;
@@ -56,8 +55,6 @@ public final class MainActivity extends Activity {
     private Integer selectedYear = 1985;
     private int initialPages = 0, lastCard = 0;
     private Movie focused;
-    private MovieMetadata focusedMeta;
-    private Runnable metadataTask;
     private boolean launchedPlayer = false;
     private boolean playerPreparing = false;
     private boolean removeMode = false;
@@ -72,10 +69,6 @@ public final class MainActivity extends Activity {
         images = new ImageLoader(this);
         updater = new UpdateManager(this);
         repo = new CdaRepository(this, securityOverlay, findViewById(R.id.securityHost));
-        repo.setMetadataObserver((movie, md) -> {
-            adapter.updateMetadata(movie.id, md);
-            if (focused != null && focused.id.equals(movie.id)) applyMetadata(focused, md);
-        });
         repo.setVerificationObserver((interactive, background) -> setStatus(
                 interactive ? "Weryfikacja zabezpieczeń CDA" :
                         background ? "Weryfikacja sesji w tle…" : "Weryfikacja w tle…"));
@@ -95,8 +88,7 @@ public final class MainActivity extends Activity {
         resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
         loadingBar = findViewById(R.id.loadingBar); loadingText = findViewById(R.id.loadingText);
         detailThumb = findViewById(R.id.detailThumb); detailTitle = findViewById(R.id.detailTitle);
-        detailStars = findViewById(R.id.detailStars); detailRatingExact = findViewById(R.id.detailRatingExact);
-        detailSources = findViewById(R.id.detailSources); detailTime = findViewById(R.id.detailTime);
+        detailTime = findViewById(R.id.detailTime);
         detailFavorite = findViewById(R.id.detailFavorite); detailDescription = findViewById(R.id.detailDescription);
         detailComments = findViewById(R.id.detailComments); detailDescriptionPreview = findViewById(R.id.detailDescriptionPreview);
         recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
@@ -112,7 +104,7 @@ public final class MainActivity extends Activity {
         grid.setHasFixedSize(true);
         grid.setItemViewCacheSize(cols * 3);
         adapter = new MovieAdapter(images, new MovieAdapter.Listener() {
-            @Override public void onFocus(Movie m, int p, View v) { lastCard = p; showMovie(m); debounceMetadata(m); }
+            @Override public void onFocus(Movie m, int p, View v) { lastCard = p; showMovie(m); }
             @Override public void onClick(Movie m, int p) {
                 lastCard = p;
                 if (removeMode) removeFromCollection(m); else play(m);
@@ -122,6 +114,11 @@ public final class MainActivity extends Activity {
         });
         adapter.setColumns(cols);
         grid.setAdapter(adapter);
+        grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(RecyclerView view, int dx, int dy) {
+                if (dy > 0 && collectionMode == null && gridLayout.findLastVisibleItemPosition() >= adapter.getItemCount() - cols) repo.loadNext();
+            }
+        });
     }
 
     private Button tvButton(String text) {
@@ -150,8 +147,6 @@ public final class MainActivity extends Activity {
                     filterButton.requestFocus();
                     return true;
                 }
-                // The filter lives visually next to the carousel, but TV navigation
-                // reaches it by DOWN as requested, not by running off the last year.
                 return key == KeyEvent.KEYCODE_DPAD_RIGHT && year == max;
             });
             yearRow.addView(b);
@@ -295,11 +290,7 @@ public final class MainActivity extends Activity {
             updateDetailFavoriteIcon();
             adapter.updateLocalState(focused);
         });
-        detailDescription.setOnClickListener(v -> {
-            if (focused == null) return;
-            String d = focusedMeta != null && !focusedMeta.description.isEmpty() ? focusedMeta.description : focused.shortDescription;
-            TvDialogs.text(this, "Opis", d);
-        });
+        detailDescription.setOnClickListener(v -> loadDescription());
         detailComments.setOnClickListener(v -> loadComments());
 
         detailFavorite.setOnKeyListener((v, key, event) -> {
@@ -330,6 +321,7 @@ public final class MainActivity extends Activity {
 
     private void startSearch(String q, String title) {
         collectionMode = null; removeMode = false; adapter.setRemoveMode(false); removeCollection.setVisibility(View.GONE);
+        repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
         query = q; initialPages = 0; adapter.setItems(Collections.emptyList());
         resultsTitle.setText(title); resultCount.setText(""); showNav();
         repo.startSearch(q, sort, duration, new CdaRepository.SearchListener() {
@@ -338,10 +330,11 @@ public final class MainActivity extends Activity {
                 setStatus("Wczytywanie strony " + page + "…");
             }
             @Override public void onPage(ArrayList<Movie> movies, int page, SearchPage stats) {
+                int previousCount = adapter.getItemCount();
                 loadingBar.setVisibility(View.GONE); initialPages++; adapter.append(movies);
                 resultCount.setText(adapter.getItemCount() + " filmów");
                 setStatus("p" + page + ": +" + movies.size() + " • Premium pominięte: " + stats.premium);
-                if (adapter.getItemCount() < INITIAL_TARGET && initialPages < INITIAL_MAX_PAGES) h.postDelayed(repo::loadNext, 100);
+                if (adapter.getItemCount() == previousCount || adapter.getItemCount() < INITIAL_TARGET && initialPages < INITIAL_MAX_PAGES) h.postDelayed(repo::loadNext, 100);
             }
             @Override public void onFinished(String why) { loadingBar.setVisibility(View.GONE); setStatus(why + " • " + adapter.getItemCount() + " filmów"); }
             @Override public void onError(String e) { loadingBar.setVisibility(View.GONE); setStatus("Błąd: " + e); }
@@ -350,7 +343,9 @@ public final class MainActivity extends Activity {
     }
 
     private void showCollection(ArrayList<Movie> list, String title, String mode) {
+        repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
         repo.cancelSearch();
+        loadingBar.setVisibility(View.GONE);
         collectionMode = mode;
         removeMode = false;
         adapter.setRemoveMode(false);
@@ -405,46 +400,38 @@ public final class MainActivity extends Activity {
     }
 
     private void showMovie(Movie m) {
-        focused = m; showDetail(); detailTitle.setText(m.title); images.load(m.imageUrl, detailThumb);
+        focused = m;
+        showDetail();
+        detailTitle.setText(m.title);
+        images.load(m.imageUrl, detailThumb);
         detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
-        detailDescriptionPreview.setText(m.shortDescription);
+        detailDescriptionPreview.setText(m.shortDescription == null ? "" : m.shortDescription);
         updateDetailFavoriteIcon();
-        applyMetadata(m, repo.db().getMetadata(m.id));
+        updateDetailCommentsDescription(null);
     }
 
-    private void debounceMetadata(Movie m) {
-        if (metadataTask != null) h.removeCallbacks(metadataTask);
-        metadataTask = () -> repo.loadMetadata(m, true, new CdaRepository.MetadataListener() {
+    private void loadDescription() {
+        Movie m = focused;
+        if (m == null) return;
+        MovieMetadata cached = repo.db().getMetadata(m.id);
+        if (cached != null && cached.description != null && !cached.description.isEmpty()) {
+            TvDialogs.text(this, "Opis", cached.description);
+            return;
+        }
+        setStatus("Wczytywanie pełnego opisu…");
+        repo.loadMetadata(m, true, new CdaRepository.MetadataListener() {
             @Override public void onMetadata(MovieMetadata md) {
-                if (focused != null && focused.id.equals(m.id)) {
-                    applyMetadata(m, md); adapter.updateMetadata(m.id, md); repo.resumeEnrichment();
-                }
+                String d = md == null || md.description == null || md.description.isEmpty()
+                        ? (m.shortDescription == null ? "" : m.shortDescription)
+                        : md.description;
+                setStatus("Gotowe");
+                TvDialogs.text(MainActivity.this, "Opis", d);
             }
-            @Override public void onError(String e) {}
+            @Override public void onError(String e) {
+                setStatus("Błąd: " + e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
         });
-        h.postDelayed(metadataTask, 400);
-    }
-
-    private void applyMetadata(Movie m, MovieMetadata md) {
-        focusedMeta = md;
-        if (md == null) {
-            detailStars.setRating(m.rating);
-            detailRatingExact.setText(m.rating == null ? "" : String.format(Locale.US, "%.1f / 5", m.rating));
-            detailSources.setText(""); updateDetailCommentsDescription(null); return;
-        }
-        Double rating = md.rating != null ? md.rating : m.rating;
-        detailStars.setRating(rating);
-        detailRatingExact.setText(rating == null ? "" : String.format(Locale.US, "%.1f / 5", rating));
-        StringBuilder sources = new StringBuilder();
-        if (rating != null && md.cdaVotes != null) sources.append("CDA ").append(String.format(Locale.US, "%.1f / 5", rating)).append(" • ").append(md.cdaVotes).append(" ocen");
-        if (!md.imdbRating.isEmpty()) {
-            if (sources.length() > 0) sources.append('\n');
-            sources.append("IMDb ").append(md.imdbRating).append(" / 10");
-            if (md.imdbVotes != null) sources.append(" • ").append(md.imdbVotes).append(" głosów");
-        }
-        detailSources.setText(sources);
-        if (!md.description.isEmpty()) detailDescriptionPreview.setText(md.description);
-        updateDetailCommentsDescription(md.commentCount);
     }
 
     private void loadComments() {
@@ -476,6 +463,7 @@ public final class MainActivity extends Activity {
     private void play(Movie m) {
         if (playerPreparing) return;
         playerPreparing = true;
+        loadingBar.setVisibility(View.GONE);
         setStatus("Przygotowanie filmu…");
         Toast.makeText(this, "Przygotowanie filmu…", Toast.LENGTH_SHORT).show();
         repo.loadPlayer(m, new CdaRepository.PlayerListener() {
@@ -491,12 +479,14 @@ public final class MainActivity extends Activity {
                 i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
                 i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);
-                if (md.rating != null) i.putExtra("rating", md.rating);
-                if (md.cdaVotes != null) i.putExtra("cdaVotes", md.cdaVotes);
-                i.putExtra("imdbRating", md.imdbRating);
-                if (md.imdbVotes != null) i.putExtra("imdbVotes", md.imdbVotes);
-                if (md.commentCount != null) i.putExtra("commentCount", md.commentCount);
-                startActivity(i); setStatus("Gotowe");
+                try {
+                    startActivity(i);
+                    setStatus("Gotowe");
+                } catch (RuntimeException e) {
+                    launchedPlayer = false;
+                    repo.exitPlaybackMode();
+                    setStatus("Nie można uruchomić odtwarzacza");
+                }
             }
             @Override public void onError(String e) {
                 playerPreparing = false;
@@ -554,11 +544,18 @@ public final class MainActivity extends Activity {
         if (repo != null && launchedPlayer) {
             launchedPlayer = false;
             repo.exitPlaybackMode();
-            repo.db().decorateLocalState(adapter.items());
-            adapter.notifyLocalStatesChanged();
+            if ("recent".equals(collectionMode)) adapter.setItems(repo.db().recent());
+            else if ("favorites".equals(collectionMode)) adapter.setItems(repo.db().favorites());
+            else {
+                repo.db().decorateLocalState(adapter.items());
+                adapter.notifyLocalStatesChanged();
+            }
+            resultCount.setText(adapter.getItemCount() + " filmów");
+            lastCard = Math.max(0, Math.min(lastCard, adapter.getItemCount() - 1));
             if (lastCard >= 0 && lastCard < adapter.items().size()) {
                 focused = adapter.items().get(lastCard);
                 showMovie(focused);
+                restoreCard();
             }
         }
     }
@@ -566,6 +563,17 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (playerPreparing) {
+            repo.cancelPlayer(); playerPreparing = false;
+            setStatus("Przygotowanie filmu przerwane");
+            return;
+        }
+        if (repo.isSearchLoading()) {
+            repo.cancelSearch();
+            loadingBar.setVisibility(View.GONE);
+            setStatus("Wyszukiwanie przerwane");
+            return;
+        }
         if (removeMode) {
             removeMode = false;
             adapter.setRemoveMode(false);
@@ -594,8 +602,18 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStop() {
+        if (playerPreparing && !launchedPlayer) {
+            repo.cancelPlayer();
+            playerPreparing = false;
+            setStatus("Przygotowanie filmu przerwane");
+        }
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
-        if (metadataTask != null) h.removeCallbacks(metadataTask);
+        h.removeCallbacksAndMessages(null);
         if (repo != null) repo.shutdown();
         if (images != null) images.shutdown();
         if (updater != null) updater.shutdown();

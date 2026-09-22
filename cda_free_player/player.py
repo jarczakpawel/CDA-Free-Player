@@ -5,13 +5,17 @@ import shutil
 import socket
 import subprocess
 import threading
+import tempfile
+import sys
+import uuid
+from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from urllib.parse import urljoin
 
-from .client import log_event
-from .config import LOG_DIR
+from .client import log_event, SearchCancelled
+from .config import LOG_DIR, resource_root
 
 
 class Player:
@@ -19,8 +23,18 @@ class Player:
         self.client = client
         self.db = db
         self.events = events
+        self.process = None
+        self.monitor = None
+        self.lock = threading.Lock()
 
     def resolve(self, item, pdata):
+        if not isinstance(pdata, dict) or not isinstance(pdata.get("video"), dict):
+            return None
+        video = pdata["video"]
+        if pdata.get("premium") in (True, 1, "1", "true") or video.get("premium") in (True, 1, "1", "true"):
+            raise RuntimeError("Materiał Premium - pominięty.")
+        if video.get("type") not in (None, "", "plain"):
+            raise RuntimeError("Materiał niedostępny.")
         video = pdata.get(
             "video",
             {},
@@ -39,7 +53,7 @@ class Player:
             for label, value in qualities.items():
                 match = re.search(
                     r"(\d+)",
-                    label,
+                    str(label),
                 )
 
                 if match:
@@ -218,6 +232,11 @@ class Player:
                 response.content
             )
 
+            if root.findall(".//{*}SegmentTemplate") or root.findall(".//{*}SegmentList") or root.findall(".//{*}ContentProtection"):
+                return None
+            if len(root.findall("{*}Period")) != 1:
+                return None
+            parents = {child: parent for parent in root.iter() for child in parent}
             video_tracks = []
             audio_tracks = []
 
@@ -293,10 +312,18 @@ class Player:
                     if not base_text:
                         continue
 
-                    url = urljoin(
-                        manifest_url,
-                        base_text,
-                    )
+                    chain = []
+                    node = representation
+                    while node is not None:
+                        chain.append(node)
+                        node = parents.get(node)
+                    url = str(response.url)
+                    for node in reversed(chain):
+                        base_node = node.find("{*}BaseURL")
+                        if base_node is not None and base_node.text:
+                            url = urljoin(url, base_node.text.strip())
+                    if url.split("?", 1)[0].endswith("/"):
+                        continue
 
                     height = int(
                         representation.get(
@@ -463,221 +490,191 @@ class Player:
         finally:
             client.close()
 
-    def play(self, item, pdata):
-        resolved = self.resolve(
-            item,
-            pdata,
-        )
+    @staticmethod
+    def find_mpv():
+        name = "mpv.exe" if os.name == "nt" else "mpv"
+        for path in (
+            Path(sys.executable).resolve().parent / "mpv" / name,
+            resource_root() / "mpv" / name,
+            Path("/opt/homebrew/bin/mpv"),
+            Path("/usr/local/bin/mpv"),
+        ):
+            if path.is_file():
+                return str(path)
+        found = shutil.which(name)
+        if found:
+            return found
+        raise RuntimeError("Brak mpv. Windows: rozpakuj całą paczkę z katalogiem mpv. macOS: brew install mpv. Linux: sudo apt install mpv.")
 
+    def play(self, item, pdata, cancel_event=None):
+        mpv = self.find_mpv()
+        resolved = self.resolve(item, pdata)
         if not resolved:
-            raise RuntimeError(
-                "Nie udało się pobrać strumienia filmu."
-            )
-
+            raise RuntimeError("Nie udało się pobrać strumienia filmu.")
         stream = resolved["video"]
-        audio_stream = resolved.get(
-            "audio"
-        )
+        audio = resolved.get("audio")
         kind = resolved["kind"]
-        quality = resolved.get(
-            "quality",
-            "",
-        )
-        resolve_source = resolved.get(
-            "source",
-            "",
-        )
-
-        mpv = shutil.which("mpv")
-        if not mpv:
-            raise RuntimeError("Brak mpv.")
-
-        start_pos, media_duration = self.db.history_position(item["id"])
-
-        if media_duration and start_pos >= media_duration * 0.95:
-            start_pos = 0
-
-        ipc = f"/tmp/cda-free-player-{os.getpid()}-{item['id']}.sock"
-
-        try:
-            os.unlink(ipc)
-        except FileNotFoundError:
-            pass
-
+        quality = resolved.get("quality", "")
+        position, duration = self.db.history_position(item["id"])
+        if duration and position >= duration * 0.95:
+            position = 0
+        ipc_name = "cdafp-" + uuid.uuid4().hex
+        ipc = "\\\\.\\pipe\\" + ipc_name if os.name == "nt" else str(Path(tempfile.gettempdir()) / (ipc_name + ".sock"))
         session = self.client.load_session()
-        headers = [f"Referer: {item['url']}"]
-
+        headers = ["Referer: " + item["url"]]
         if session:
-            headers.append(f"User-Agent: {session['user_agent']}")
-            cookie = "; ".join(
-                f"{c['name']}={c['value']}"
-                for c in session["cookies"]
-            )
-            if cookie:
-                headers.append(f"Cookie: {cookie}")
-
-        log_path = LOG_DIR / (
-            f"mpv-v6-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-            f"-{item['id']}.log"
-        )
-        log_handle = open(log_path, "w", encoding="utf-8")
-
+            headers.append("User-Agent: " + session["user_agent"])
+        log_path = LOG_DIR / f"mpv-{datetime.now():%Y%m%d-%H%M%S}-{ipc_name[-8:]}.log"
         command = [
-            mpv,
-            stream,
-            "--fs",
-            "--force-window=yes",
-            "--ytdl=no",
-            "--hwdec=auto-safe",
-            "--cache=yes",
-            "--cache-secs=15",
-            "--demuxer-readahead-secs=12",
-            f"--input-ipc-server={ipc}",
-            f"--title={item['title']}",
-            f"--http-header-fields={','.join(headers)}",
+            mpv, "--no-config", "--fs", "--force-window=yes", "--ytdl=no", "--hwdec=auto-safe",
+            "--cache=yes", "--cache-secs=15", "--demuxer-readahead-secs=12",
+            "--input-ipc-server=" + ipc, "--title=" + item["title"],
+            "--http-header-fields=" + ",".join(header.replace("\\", "\\\\").replace(",", "\\,") for header in headers),
         ]
-
         if kind == "mp4-range":
-            command.extend([
-                "--demuxer-lavf-o=seekable=1",
-                "--cache-secs=8",
-            ])
-
-        if audio_stream:
-            command.append(
-                f"--audio-file={audio_stream}"
-            )
-
-        if start_pos > 5:
-            command.append(
-                f"--start={start_pos}"
-            )
-
+            command.extend(["--demuxer-lavf-o=seekable=1", "--cache-secs=8"])
+        if audio:
+            command.append("--audio-file=" + audio)
+        if position > 5:
+            command.append("--start=" + str(position))
         if kind == "hls":
-            command.append(
-                "--hls-bitrate=max"
+            command.append("--hls-bitrate=max")
+        command.extend(["--", stream])
+        cookie_path = None
+        with self.lock:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SearchCancelled("Przygotowanie filmu przerwane")
+            if self.process is not None and self.process.poll() is None:
+                raise RuntimeError("Film jest już odtwarzany. Zamknij jego okno przed otwarciem następnego.")
+            if session and session.get("cookies"):
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="cdafp-cookies-", delete=False) as cookies:
+                    cookie_path = cookies.name
+                    cookies.write("# Netscape HTTP Cookie File\n")
+                    for cookie in session["cookies"]:
+                        domain = str(cookie.get("domain") or ".cda.pl")
+                        fields = (domain, "TRUE" if domain.startswith(".") else "FALSE", str(cookie.get("path") or "/"),
+                                  "TRUE" if cookie.get("secure") else "FALSE", "0", str(cookie.get("name", "")), str(cookie.get("value", "")))
+                        if not any(char in field for field in fields for char in "\t\r\n"):
+                            cookies.write("\t".join(fields) + "\n")
+                command[1:1] = ["--cookies=yes", "--cookies-file=" + cookie_path]
+            try:
+                with log_path.open("w", encoding="utf-8") as log:
+                    self.process = subprocess.Popen(
+                        command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    )
+            except Exception:
+                if cookie_path: os.unlink(cookie_path)
+                raise
+            process = self.process
+            self.monitor = threading.Thread(
+                target=self._monitor, args=(process, ipc, item, position, duration, cookie_path), daemon=True,
             )
-
-        process = subprocess.Popen(
-            command,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-        )
-
-        self.db.save_history(
-            item,
-            start_pos,
-            media_duration,
-        )
-
-        log_event(
-            "play",
-            id=item["id"],
-            stream_type=kind,
-            quality=quality,
-            resolve_source=resolve_source,
-            separate_audio=bool(audio_stream),
-            resume=start_pos,
-            log=str(log_path),
-        )
-
-        threading.Thread(
-            target=self._monitor,
-            args=(
-                process,
-                ipc,
-                item,
-                start_pos,
-                media_duration,
-            ),
-            daemon=True,
-        ).start()
-
+            self.monitor.start()
+        log_event("play", id=item["id"], stream_type=kind, quality=quality,
+                  resolve_source=resolved.get("source", ""), separate_audio=bool(audio), resume=position)
         return kind, quality, log_path
 
-    def _monitor(
-        self,
-        process,
-        ipc,
-        item,
-        position,
-        duration,
-    ):
-        deadline = time.monotonic() + 15
-
-        while (
-            time.monotonic() < deadline
-            and process.poll() is None
-            and not os.path.exists(ipc)
-        ):
-            time.sleep(0.2)
-
-        while process.poll() is None:
-            try:
-                position = self._property(ipc, "time-pos") or position
-                duration = self._property(ipc, "duration") or duration
-                self.db.save_history(
-                    item,
-                    position,
-                    duration,
-                )
-            except Exception:
-                pass
-
-            time.sleep(5)
-
-        self.db.save_history(
-            item,
-            position,
-            duration,
-        )
-
+    def _monitor(self, process, ipc, item, position, duration, cookie_path):
+        conn = None
+        ready = False
+        last_save = 0
+        buffer = b""
         try:
-            os.unlink(ipc)
-        except FileNotFoundError:
-            pass
-
-        log_event(
-            "play_end",
-            id=item["id"],
-            position=position,
-            duration=duration,
-        )
-
-    @staticmethod
-    def _property(ipc, name):
-        sock = socket.socket(
-            socket.AF_UNIX,
-            socket.SOCK_STREAM,
-        )
-        sock.settimeout(1.0)
-
-        try:
-            sock.connect(ipc)
-            sock.sendall((
-                json.dumps({
-                    "command": ["get_property", name],
-                }) + "\n"
-            ).encode())
-
-            data = b""
-
-            while b"\n" not in data:
-                chunk = sock.recv(4096)
-                if not chunk:
+            deadline = time.monotonic() + 15
+            while process.poll() is None and time.monotonic() < deadline:
+                try:
+                    if os.name == "nt":
+                        conn = open(ipc, "r+b", buffering=0)
+                    else:
+                        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        conn.settimeout(0.25)
+                        conn.connect(ipc)
                     break
-                data += chunk
-
-            if not data:
-                return None
-
-            response = json.loads(
-                data.split(b"\n", 1)[0].decode()
-            )
-
-            if response.get("error") == "success":
-                return response.get("data")
+                except OSError:
+                    if conn is not None: conn.close()
+                    conn = None
+                    time.sleep(0.1)
+            if conn is None:
+                if process.poll() is None:
+                    self.events.put(("error", "Odtwarzacz nie udostępnił zapisu postępu. Sprawdź log mpv."))
+                    process.terminate()
+                return
+            commands = b"".join((json.dumps({"command": ["observe_property", i, name]}) + "\n").encode()
+                                for i, name in enumerate(("time-pos", "duration"), 1))
+            if os.name == "nt":
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+                peek = ctypes.WinDLL("kernel32", use_last_error=True).PeekNamedPipe
+                peek.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                                 ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+                peek.restype = wintypes.BOOL
+                handle = msvcrt.get_osfhandle(conn.fileno())
+                conn.write(commands)
+            else:
+                conn.sendall(commands)
+            while True:
+                if os.name == "nt":
+                    available = wintypes.DWORD()
+                    if not peek(handle, None, 0, None, ctypes.byref(available), None):
+                        break
+                    if not available.value:
+                        if process.poll() is not None: break
+                        time.sleep(0.1)
+                        continue
+                    chunk = conn.read(min(65536, available.value))
+                else:
+                    try:
+                        chunk = conn.recv(65536)
+                    except socket.timeout:
+                        if process.poll() is not None: break
+                        continue
+                if not chunk: break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if event.get("event") == "file-loaded":
+                        ready = True
+                    if event.get("event") == "property-change":
+                        value = event.get("data")
+                        if isinstance(value, (int, float)) and value >= 0:
+                            if event.get("name") == "time-pos":
+                                position = value
+                                ready = True
+                            elif event.get("name") == "duration":
+                                duration = value
+                    now = time.monotonic()
+                    if ready and duration > 0 and now - last_save >= 5:
+                        self.db.save_history(item, position, duration)
+                        last_save = now
+        except (OSError, ValueError) as exc:
+            log_event("player_ipc_error", id=item["id"], error=type(exc).__name__)
         finally:
-            sock.close()
+            if conn is not None: conn.close()
+            if cookie_path:
+                try: os.unlink(cookie_path)
+                except FileNotFoundError: pass
+            if ready and duration > 0:
+                self.db.save_history(item, position, duration)
+            if os.name != "nt":
+                try: os.unlink(ipc)
+                except FileNotFoundError: pass
+            if process.poll() not in (None, 0):
+                self.events.put(("error", "Odtwarzacz zakończył się błędem. Sprawdź log mpv w katalogu aplikacji."))
+            self.events.put(("play_end", item["id"]))
+            log_event("play_end", id=item["id"], position=position, duration=duration)
 
-        return None
+    def stop(self):
+        with self.lock:
+            process = self.process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try: process.wait(timeout=3)
+            except subprocess.TimeoutExpired: process.kill()
+        if self.monitor is not None:
+            self.monitor.join(timeout=2)

@@ -14,9 +14,9 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.HashSet;
 
 public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder> {
-    private static final String PAYLOAD_METADATA = "metadata";
     private static final String PAYLOAD_LOCAL = "local";
 
     public interface Listener {
@@ -26,6 +26,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         void onLastRow(int pos);
     }
 
+    private final HashSet<String> ids = new HashSet<>();
     private final ArrayList<Movie> items = new ArrayList<>();
     private final ImageLoader images;
     private final Listener listener;
@@ -35,7 +36,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
     public MovieAdapter(ImageLoader images, Listener listener) {
         this.images = images;
         this.listener = listener;
-        setHasStableIds(true);
+        setHasStableIds(false);
     }
 
     public void setColumns(int n) { columns = Math.max(1, n); }
@@ -45,25 +46,15 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
 
     public void setItems(Collection<Movie> movies) {
         items.clear();
-        items.addAll(movies);
+        ids.clear();
+        for (Movie movie : movies) if (ids.add(movie.id)) items.add(movie);
         notifyDataSetChanged();
     }
 
     public void append(Collection<Movie> movies) {
         int start = items.size();
-        items.addAll(movies);
-        notifyItemRangeInserted(start, movies.size());
-    }
-
-    public void updateMetadata(String id, MovieMetadata md) {
-        for (int i = 0; i < items.size(); i++) {
-            Movie m = items.get(i);
-            if (m.id.equals(id)) {
-                if (md.rating != null) m.rating = md.rating;
-                notifyItemChanged(i, PAYLOAD_METADATA);
-                return;
-            }
-        }
+        for (Movie movie : movies) if (ids.add(movie.id)) items.add(movie);
+        if (items.size() > start) notifyItemRangeInserted(start, items.size() - start);
     }
 
     public void updateLocalState(Movie changed) {
@@ -98,7 +89,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         h.root.setBackgroundResource(removeMode ? R.drawable.card_bg_remove : R.drawable.card_bg);
         h.title.setText(m.title);
         h.duration.setText(m.duration);
-        h.stars.setRating(m.rating);
         images.load(m.imageUrl, h.image);
         bindLocal(h, m);
         bindListeners(h, m);
@@ -113,10 +103,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         Movie m = items.get(pos);
         boolean handled = false;
         for (Object payload : payloads) {
-            if (PAYLOAD_METADATA.equals(payload)) {
-                h.stars.setRating(m.rating);
-                handled = true;
-            } else if (PAYLOAD_LOCAL.equals(payload)) {
+            if (PAYLOAD_LOCAL.equals(payload)) {
                 bindLocal(h, m);
                 handled = true;
             }
@@ -152,14 +139,13 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         });
         h.root.setOnKeyListener((v, key, event) -> {
             int p = h.getBindingAdapterPosition();
-            if (p == RecyclerView.NO_POSITION || event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if ((key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER || key == KeyEvent.KEYCODE_NUMPAD_ENTER)
-                    && event.getRepeatCount() == 0) {
-                // Do not rely on a vendor TV image translating DPAD_CENTER into
-                // View.performClick(). Some old operator boxes only deliver the key.
-                listener.onClick(m, p);
+            if (p == RecyclerView.NO_POSITION) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER || key == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) listener.onClick(m, p);
                 return true;
             }
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
             if (key == KeyEvent.KEYCODE_DPAD_LEFT && p % columns == 0) {
                 listener.onLeftEdge(m, p);
                 return true;
@@ -174,7 +160,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
         final View root;
         final ImageView image;
         final TextView title, duration, favorite;
-        final StarRatingView stars;
         final ProgressBar progress;
 
         Holder(View v) {
@@ -184,7 +169,6 @@ public final class MovieAdapter extends RecyclerView.Adapter<MovieAdapter.Holder
             title = v.findViewById(R.id.cardTitle);
             duration = v.findViewById(R.id.cardDuration);
             favorite = v.findViewById(R.id.cardFavorite);
-            stars = v.findViewById(R.id.cardStars);
             progress = v.findViewById(R.id.cardProgress);
         }
     }

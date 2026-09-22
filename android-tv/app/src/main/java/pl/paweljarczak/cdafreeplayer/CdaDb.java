@@ -36,8 +36,6 @@ public final class CdaDb extends SQLiteOpenHelper {
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) {
-            // v1.0.0 could cache an Android bootstrap/interstitial page as an
-            // empty search result. Drop only search cache; history/favorites stay.
             db.delete("search_cache", null, null);
         }
     }
@@ -66,7 +64,7 @@ public final class CdaDb extends SQLiteOpenHelper {
 
     public synchronized boolean toggleFavorite(Movie m) {
         SQLiteDatabase db = getWritableDatabase();
-        if (m.favorite || isFavorite(m.id)) {
+        if (isFavorite(m.id)) {
             db.delete("favorites", "id=?", new String[]{m.id});
             m.favorite = false;
             return false;
@@ -89,6 +87,7 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     public synchronized void saveHistory(Movie m, long pos, long dur) {
+        if (dur <= 0 || pos < 0) return;
         m.positionMs = Math.max(0, pos);
         m.mediaDurationMs = Math.max(0, dur);
         ContentValues v = movieValues(m);
@@ -143,9 +142,13 @@ public final class CdaDb extends SQLiteOpenHelper {
         return out;
     }
 
-    /** Batch-decorates catalogue items: 3 SQLite queries per page, never per-card queries. */
     public synchronized void decorateLocalState(Collection<Movie> movies) {
         if (movies == null || movies.isEmpty()) return;
+        if (movies.size() > 900) {
+            ArrayList<Movie> list = new ArrayList<>(movies);
+            for (int i = 0; i < list.size(); i += 900) decorateLocalState(list.subList(i, Math.min(i + 900, list.size())));
+            return;
+        }
         HashMap<String, Movie> byId = new HashMap<>();
         for (Movie m : movies) {
             if (m == null || m.id == null || m.id.isEmpty()) continue;
@@ -241,8 +244,8 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     public synchronized ArrayList<CommentItem> getComments(String id) {
-        try (Cursor c = getReadableDatabase().rawQuery("SELECT json FROM comments WHERE id=?", new String[]{id})) {
-            if (!c.moveToFirst()) return null;
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT json,updated FROM comments WHERE id=?", new String[]{id})) {
+            if (!c.moveToFirst() || System.currentTimeMillis() - c.getLong(1) > CACHE_MS) return null;
             return commentsFromJson(c.getString(0));
         } catch (Exception e) {
             return null;

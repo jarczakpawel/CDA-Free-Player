@@ -24,6 +24,7 @@ public final class ImageLoader {
     private final LruCache<String, Bitmap> mem;
     private final ExecutorService pool = Executors.newFixedThreadPool(2);
     private final File dir;
+    private volatile boolean closed;
 
     public ImageLoader(Context c) {
         int kb = (int) (Runtime.getRuntime().maxMemory() / 1024);
@@ -37,6 +38,7 @@ public final class ImageLoader {
     }
 
     public void load(String url, ImageView v) {
+        if (closed) return;
         v.setTag(url);
         if (url == null || url.isEmpty()) {
             v.setImageDrawable(null);
@@ -47,7 +49,9 @@ public final class ImageLoader {
             v.setImageBitmap(hit);
             return;
         }
+        v.setImageDrawable(null);
         pool.execute(() -> {
+            if (closed) return;
             try {
                 File f = new File(dir, sha1(url) + ".jpg");
                 byte[] data;
@@ -59,27 +63,31 @@ public final class ImageLoader {
                     c.setConnectTimeout(8000);
                     c.setReadTimeout(10000);
                     data = read(c.getInputStream());
-                    try (FileOutputStream o = new FileOutputStream(f)) { o.write(data); }
+                    File temporary = File.createTempFile("thumb-", ".tmp", dir);
+                    try {
+                        try (FileOutputStream o = new FileOutputStream(temporary)) { o.write(data); }
+                        if (!temporary.renameTo(f)) temporary.delete();
+                    } finally { if (temporary.exists()) temporary.delete(); }
                 }
                 BitmapFactory.Options o = new BitmapFactory.Options();
                 o.inJustDecodeBounds = true;
                 BitmapFactory.decodeByteArray(data, 0, data.length, o);
                 int sx = o.outWidth > 0 ? o.outWidth / 360 : 1;
                 int sy = o.outHeight > 0 ? o.outHeight / 210 : 1;
-                o.inSampleSize = Math.max(1, Math.min(Math.max(1, sx), Math.max(1, sy)));
+                o.inSampleSize = Math.max(1, Math.max(sx, sy));
                 o.inJustDecodeBounds = false;
                 o.inPreferredConfig = Bitmap.Config.RGB_565;
                 Bitmap b = BitmapFactory.decodeByteArray(data, 0, data.length, o);
-                if (b != null) mem.put(url, b);
+                if (b != null && !closed) mem.put(url, b);
+                else if (b == null) f.delete();
                 Bitmap out = b;
                 v.post(() -> {
-                    if (url.equals(v.getTag()) && out != null) v.setImageBitmap(out);
+                    if (!closed && url.equals(v.getTag()) && out != null) v.setImageBitmap(out);
                 });
             } catch (Exception ignored) {}
         });
     }
 
-    /** Free catalogue bitmap RAM before full-screen playback; disk cache remains hot. */
     public void trimForPlayback() { mem.evictAll(); }
 
     private void pruneDisk() {
@@ -102,7 +110,10 @@ public final class ImageLoader {
         try (InputStream x = in; ByteArrayOutputStream o = new ByteArrayOutputStream()) {
             byte[] buf = new byte[8192];
             int n;
-            while ((n = x.read(buf)) > 0) o.write(buf, 0, n);
+            while ((n = x.read(buf)) > 0) {
+                if (Thread.currentThread().isInterrupted() || o.size() + n > 8 * 1024 * 1024) throw new java.io.IOException("Przerwano pobieranie miniatury");
+                o.write(buf, 0, n);
+            }
             return o.toByteArray();
         }
     }
@@ -115,5 +126,5 @@ public final class ImageLoader {
         return x.toString();
     }
 
-    public void shutdown() { pool.shutdownNow(); }
+    public void shutdown() { closed = true; pool.shutdownNow(); mem.evictAll(); }
 }

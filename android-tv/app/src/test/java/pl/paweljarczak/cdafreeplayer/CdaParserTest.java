@@ -3,6 +3,8 @@ package pl.paweljarczak.cdafreeplayer;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 public final class CdaParserTest {
     @Test
@@ -49,4 +51,29 @@ public final class CdaParserTest {
         assertEquals(1, page.movies.size());
         assertEquals("free2", page.movies.get(0).id);
     }
+    @Test
+    public void parsesExactCapturedPlayerData() {
+        String json = "{\"premium\":false,\"video\":{" +
+                "\"type\":\"plain\",\"manifest\":\"https://cdn.example/movie.mpd\"," +
+                "\"manifest_apple\":\"https://cdn.example/movie.m3u8\"," +
+                "\"ts\":123456,\"hash2\":\"abc\",\"qualities\":{\"720p\":\"sd\"}}}";
+        PlayerData p = CdaParser.parsePlayerData(CdaParser.PLAYER_DATA_PREFIX + json);
+        assertNotNull(p);
+        assertEquals("plain", p.type);
+        assertEquals("https://cdn.example/movie.mpd", p.dash);
+        assertEquals("https://cdn.example/movie.m3u8", p.hls);
+        assertEquals("abc", p.hash2);
+        assertTrue(p.qualities.containsKey("720p"));
+        assertTrue(p.hasPlayableSource());
+    }
+
+    @Test
+    public void parsesHtmlEntityEncodedPlayerAttribute() {
+        String html = "<div id='mediaplayer123' player_data='{&quot;premium&quot;:false,&quot;video&quot;:{&quot;type&quot;:&quot;plain&quot;,&quot;manifest&quot;:&quot;https://cdn.example/x.mpd&quot;}}'></div>";
+        PlayerData p = CdaParser.parsePlayerData(html);
+        assertNotNull(p);
+        assertEquals("https://cdn.example/x.mpd", p.dash);
+        assertTrue(p.hasPlayableSource());
+    }
+
 }

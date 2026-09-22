@@ -1,0 +1,4 @@
+httpx[http2]==0.28.1
+beautifulsoup4==4.15.0
+pillow==12.3.0
+pywebview==6.2.1

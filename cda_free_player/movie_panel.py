@@ -558,6 +558,21 @@ class MovieInfoWindow:
             description
         )
 
+    def set_description_loading(self):
+        self.body_mode = True
+        self.title.configure(text="Pełny opis")
+        self._set_body("Wczytywanie pełnego opisu…")
+
+    def set_description(self, text):
+        self.metadata["description"] = text or self.item.get("short_description", "")
+        self.show_description()
+
+    def set_description_error(self, error):
+        self.body_mode = True
+        self.title.configure(text="Pełny opis")
+        fallback = self.item.get("short_description", "")
+        self._set_body((error + "\n\n" + fallback).strip())
+
     def request_comments(self):
         self.body_mode = True
         count = self.metadata.get(

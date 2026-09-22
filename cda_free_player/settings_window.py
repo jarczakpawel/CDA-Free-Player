@@ -1,4 +1,5 @@
 import threading
+import queue
 import tkinter as tk
 from tkinter import messagebox
 import webbrowser
@@ -49,7 +50,9 @@ class SettingsWindow:
         link.pack(anchor="w", pady=(4,0))
         link.bind("<Button-1>", lambda e: webbrowser.open(REPOSITORY_URL))
 
+        self.update_events = queue.Queue()
         threading.Thread(target=self._check_update_worker, daemon=True).start()
+        self.win.after(100, self._poll_update)
 
     def _section(self, parent, text):
         tk.Label(parent, text=text, bg=BG, fg=TEXT, font=("Sans", 12, "bold")).pack(anchor="w", pady=(10,6))
@@ -100,10 +103,21 @@ class SettingsWindow:
     def _check_update_worker(self):
         try:
             info = check_latest()
-            self.root.after(0, lambda: self._apply_update(info))
+            self.update_events.put((info, None))
         except Exception as exc:
             message = f"Nie udało się sprawdzić aktualizacji: {exc}"
-            self.root.after(0, lambda m=message: self.update_status.configure(text=m))
+            self.update_events.put((None, message))
+
+    def _poll_update(self):
+        try:
+            info, error = self.update_events.get_nowait()
+        except queue.Empty:
+            self.win.after(100, self._poll_update)
+            return
+        if error:
+            self.update_status.configure(text=error)
+        else:
+            self._apply_update(info)
 
     def _apply_update(self, info):
         self.update_info = info

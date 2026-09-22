@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 
-from .config import APP_ICON, WEBVIEW_STORAGE_DIR
+from .config import APP_ICON, ASSET_DIR, WEBVIEW_STORAGE_DIR
 from .client import log_event, SearchCancelled
 from .webview_worker import run_webview_worker
 
@@ -21,7 +21,7 @@ class NativeWebViewSession:
         self.lock = threading.Lock()
 
     def _gui(self):
-        return "qt" if platform.system().lower() == "linux" else None
+        return {"linux": "gtk", "windows": "edgechromium", "darwin": "cocoa"}.get(platform.system().lower())
 
     def _start(self):
         if self.proc is not None and self.proc.is_alive():
@@ -32,7 +32,7 @@ class NativeWebViewSession:
         self.conn = parent
         self.proc = ctx.Process(
             target=run_webview_worker,
-            args=(child, str(WEBVIEW_STORAGE_DIR), str(APP_ICON), self._gui()),
+            args=(child, str(WEBVIEW_STORAGE_DIR), str(APP_ICON), self._gui(), str(ASSET_DIR / "web" / "player_capture.js")),
             daemon=True,
             name="cda-free-player-webview",
         )
@@ -56,12 +56,18 @@ class NativeWebViewSession:
             raise NativeWebViewUnavailable("Native WebView nie działa")
         self.conn.send(payload)
 
-    def fetch(self, url, cancel_event=None):
+    def fetch(self, url, cancel_event=None, expect_player=False):
         with self.lock:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SearchCancelled("Wyszukiwanie anulowane.")
             self._start()
             request_id = uuid.uuid4().hex
-            self._send({"cmd":"fetch","id":request_id,"url":url})
+            self._send({"cmd":"fetch","id":request_id,"url":url,"expect_player":expect_player})
+            deadline = time.monotonic() + 185
             while True:
+                if time.monotonic() > deadline:
+                    self.stop()
+                    raise NativeWebViewUnavailable("Przekroczono czas odpowiedzi WebView")
                 if cancel_event is not None and cancel_event.is_set():
                     try: self._send({"cmd":"cancel","id":request_id})
                     except Exception: pass
@@ -89,7 +95,7 @@ class NativeWebViewSession:
                     if not msg.get("ok"):
                         raise RuntimeError(msg.get("error", "WebView error"))
                     result = msg
-                    # Free renderer memory after the browser session is captured.
+                                                                                 
                     self.stop()
                     return result
 

@@ -6,6 +6,8 @@ pyinstaller --noconfirm --clean --windowed --name "CDA Free Player" \
   --icon "assets/macos/cda-free-player.icns" \
   --add-data "assets:assets" \
   --add-data "VERSION:." \
+  --hidden-import "PIL._tkinter_finder" \
+  --hidden-import "PIL._imagingtk" \
   --hidden-import "webview.platforms.cocoa" \
   --exclude-module "webview.platforms.android" \
   --exclude-module "webview.platforms.gtk" \

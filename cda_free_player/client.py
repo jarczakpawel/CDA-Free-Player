@@ -5,6 +5,7 @@ import os
 from logging.handlers import RotatingFileHandler
 import re
 import threading
+import tempfile
 import time
 from datetime import datetime
 from urllib.parse import quote, unquote
@@ -189,7 +190,7 @@ def tooltip_from_tile(tile):
 
 
 def rating_from_tile(tile):
-    # Prefer structured/current CDA markup.
+                                           
     for selector in (
         '[itemprop="ratingValue"]',
         '[data-rating]',
@@ -232,8 +233,8 @@ def rating_from_tile(tile):
                     f"{rating:.1f}"
                 )
 
-    # Fallback for tooltip/text variants such as:
-    # "Ocena: 4.7", "rating 4,7/5", "4.7 / 5".
+                                                 
+                                              
     text = " ".join(
         tile.stripped_strings
     )
@@ -267,10 +268,10 @@ def premium_marker(tile):
     if tile is None:
         return None
 
-    # IMPORTANT:
-    # Only inspect this exact search-result tile. Never inspect its parent row.
-    # CDA groups multiple results under larger wrappers, so a Premium badge
-    # belonging to one result must not hide neighbouring free videos.
+                
+                                                                               
+                                                                           
+                                                                     
     text = " ".join(
         tile.stripped_strings
     )
@@ -292,6 +293,9 @@ def premium_marker(tile):
         node_id = str(
             node.get("id", "")
         ).lower()
+
+        if str(node.get("data-premium", "")).lower() in ("true", "1"):
+            return "data-premium"
 
         if "premium" in classes:
             return "class"
@@ -318,9 +322,9 @@ def premium_marker(tile):
             ):
                 return f"attr:{name}"
 
-        # Some CDA badges are links/images whose own href/src names Premium.
-        # Restrict this check to small badge-like descendants so the normal
-        # movie link cannot contaminate classification.
+                                                                            
+                                                                           
+                                                       
         node_classes = set(
             c.lower()
             for c in node.get("class", [])
@@ -389,8 +393,8 @@ def parse_results(page_html):
         if vid in seen:
             continue
 
-        # Premium classification is deliberately TILE-LOCAL.
-        # Parent wrappers may contain many different search results.
+                                                            
+                                                                    
         context = tile
 
         reason = premium_marker(
@@ -439,8 +443,8 @@ def parse_results(page_html):
 
         if image:
             image_url = (
-                image.get("src")
-                or image.get("data-src")
+                image.get("data-src")
+                or image.get("src")
                 or ""
             )
 
@@ -491,13 +495,29 @@ def parse_results(page_html):
 
 
 def parse_player_data(page_html):
-    soup = BeautifulSoup(page_html, "html.parser")
-    for node in soup.select("div[id^='mediaplayer'][player_data]"):
-        raw = node.get("player_data")
-        if raw:
+    text = page_html or ""
+    candidates = []
+    if text.startswith("__CDA_PLAYER_DATA__"):
+        candidates.append(text[len("__CDA_PLAYER_DATA__"):])
+    else:
+        soup = BeautifulSoup(text, "html.parser")
+        for node in soup.select("[player_data],[data-player-data],[data-player_data]"):
+            candidates.extend(node.get(key) for key in ("player_data", "data-player-data", "data-player_data") if node.get(key))
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r'(?:player_data|playerData)\s*[=:]\s*(\{)', text):
             try:
-                return json.loads(raw)
-            except Exception:
+                data, _ = decoder.raw_decode(text[match.start(1):])
+                if isinstance(data, dict) and isinstance(data.get("video"), dict):
+                    candidates.append(json.dumps(data))
+            except ValueError:
+                pass
+    for raw in candidates:
+        for value in (raw, htmlmod.unescape(raw)):
+            try:
+                data = json.loads(value)
+                if isinstance(data, dict) and isinstance(data.get("video"), dict):
+                    return data
+            except (ValueError, TypeError):
                 pass
     return None
 
@@ -681,8 +701,8 @@ def parse_metadata(page_html):
             imdb_match.group(2)
         )
 
-    # Prefer a dedicated count if CDA exposes one, otherwise count
-    # the top-level comments already present in the movie page HTML.
+                                                                  
+                                                                    
     comment_count = None
 
     for selector in (
@@ -877,38 +897,40 @@ class SearchCancelled(Exception):
 class CdaClient:
     def __init__(self, events):
         self.events = events
-        # A persistent Chromium profile cannot be safely launched twice.
-        # Serialize browser fallback; cancelled searches close their context
-        # before the next search is allowed to launch it.
+                                                                        
+                                                                            
+                                                         
         self.browser_lock = threading.Lock()
         self._native_webview = None
 
     def native_webview(self):
-        if self._native_webview is None:
-            from .native_webview import NativeWebViewSession
-            self._native_webview = NativeWebViewSession(
-                self.events
-            )
-        return self._native_webview
+        with self.browser_lock:
+            if self._native_webview is None:
+                from .native_webview import NativeWebViewSession
+                self._native_webview = NativeWebViewSession(self.events)
+            return self._native_webview
 
     def load_session(self):
         if not SESSION_FILE.exists():
             return None
 
         try:
-            return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+            session = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+            if not isinstance(session, dict) or not isinstance(session.get("user_agent"), str) or not isinstance(session.get("cookies"), list):
+                return None
+            return session
         except Exception as exc:
             log_event("session_load_error", error=str(exc))
             return None
 
     def save_session(self, cookies, user_agent):
-        SESSION_FILE.write_text(
-            json.dumps({
-                "user_agent": user_agent,
-                "cookies": cookies,
-            }, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SESSION_FILE.parent, delete=False) as out:
+            temporary = out.name
+            json.dump({"user_agent": user_agent, "cookies": cookies}, out, ensure_ascii=False)
+        try:
+            os.replace(temporary, SESSION_FILE)
+        finally:
+            if os.path.exists(temporary): os.unlink(temporary)
         log_event(
             "session_saved",
             cookie_names=sorted({c.get("name", "") for c in cookies}),
@@ -956,6 +978,7 @@ class CdaClient:
         url,
         allow_browser,
         cancel_event=None,
+        expect_player=False,
     ):
         self._check_cancel(
             cancel_event
@@ -1011,10 +1034,9 @@ class CdaClient:
                     text,
                     response.status_code,
                 ):
-                    return (
-                        text,
-                        "http",
-                    )
+                    response.raise_for_status()
+                    if not expect_player or parse_player_data(text):
+                        return text, "http"
 
                 self.events.put((
                     "security_verification",
@@ -1035,9 +1057,9 @@ class CdaClient:
                 "challenge",
             )
 
-        # Real platform-native WebView is the only browser fallback.
+                                                                    
         try:
-            native = self.native_webview().fetch(url, cancel_event)
+            native = self.native_webview().fetch(url, cancel_event, expect_player)
             cookies = native.get("cookies", [])
             user_agent = native.get("user_agent", "")
             if user_agent:
@@ -1067,9 +1089,9 @@ class CdaClient:
             query.strip(),
         ).lower()
 
-        # CDA's canonical paged catalogue works as /p1, /p2, ... .
-        # Use it from the first request on every platform instead of probing
-        # the unsuffixed route and retrying after an empty response.
+                                                                  
+                                                                            
+                                                                    
         base = (
             f"{BASE}/video/show/"
             f"{quote(slug, safe='_')}"
@@ -1084,14 +1106,11 @@ class CdaClient:
     def post_video_get_link(self, item, pdata, quality_value):
         video = pdata.get("video", {})
         ts = video.get("ts")
-
         if ts is None:
-            api_ts = pdata.get("api", {}).get("ts")
-            if isinstance(api_ts, str):
-                try:
-                    ts = int(api_ts.split("_", 1)[0])
-                except Exception:
-                    ts = api_ts
+            ts = (pdata.get("api") or {}).get("ts")
+        if isinstance(ts, str):
+            try: ts = int(ts.split("_", 1)[0])
+            except ValueError: pass
 
         hash2 = video.get("hash2")
 

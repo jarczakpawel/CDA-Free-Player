@@ -1,6 +1,7 @@
 import queue
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import tkinter as tk
 from tkinter import messagebox
@@ -65,6 +66,11 @@ class App:
             self.app_icon = None
 
         self.events = queue.Queue()
+        self.closed = False
+        self.play_preparing = False
+        self.play_cancel = threading.Event()
+        self.thumbnail_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cda-thumb")
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.client = CdaClient(self.events)
         self.db = Database()
         self.player = Player(
@@ -82,8 +88,6 @@ class App:
 
         self.search_token = 0
         self.search_cancel = threading.Event()
-        self.meta_token = 0
-        self.meta_after = None
 
         self.next_page = 1
         self.loading_page = False
@@ -107,12 +111,6 @@ class App:
         self.comments_memory = {}
         self.movie_windows = {}
 
-        self.catalog_meta_queue = queue.Queue()
-        self.catalog_meta_pending = set()
-        self.catalog_meta_attempted = set()
-        self.catalog_meta_gate = threading.Event()
-        self.catalog_meta_gate.set()
-        threading.Thread(target=self.catalog_metadata_loop, daemon=True).start()
 
         self.year_buttons = {}
         self.sort_buttons = {}
@@ -277,9 +275,9 @@ class App:
             bg=BG,
         )
 
-        # Fixed-focus TV carousel:
-        # this spacer lets even the oldest year sit at the same
-        # right-side focus position instead of being forced left.
+                                  
+                                                               
+                                                                 
         self.year_left_pad = tk.Frame(
             self.year_frame,
             bg=BG,
@@ -497,8 +495,8 @@ class App:
             anchor="nw",
         )
 
-        # Non-blocking lazy-load indicator has its own lifecycle and is
-        # deliberately NOT treated as a movie-card child during clear_results().
+                                                                       
+                                                                                
         self.grid_loading = None
         self.grid_loading_icon = None
         self.grid_loading_text = None
@@ -1277,7 +1275,7 @@ class App:
         index,
         key,
     ):
-        # Input diagnostics stay in logs; release UI does not show them.
+                                                                        
         return
 
 
@@ -1309,9 +1307,9 @@ class App:
                 elif index < old_index:
                     direction = -1
 
-            # Normal TV horizontal list:
-            # focus moves freely inside the visible viewport.
-            # The strip scrolls only after focus reaches an edge.
+                                        
+                                                             
+                                                                 
             self.ensure_year_visible(
                 year,
                 direction,
@@ -1390,6 +1388,11 @@ class App:
         )
 
     def on_controller_back(self):
+        if self.play_preparing:
+            self.play_cancel.set()
+            self.play_preparing = False
+            self.status.configure(text="Przygotowanie filmu przerwane")
+            return
         if self.loading_page:
             self.cancel_active_search(
                 "Backspace",
@@ -1397,7 +1400,7 @@ class App:
             )
 
         if self.controller.zone == "cards":
-            # First Back from a movie enters its left-side actions.
+                                                                   
             self.show_left_detail()
             self.controller.focus(
                 "detail_actions",
@@ -1406,7 +1409,7 @@ class App:
             return
 
         if self.controller.zone == "detail_actions":
-            # Second Back leaves the movie context and returns to main menu.
+                                                                            
             self.show_left_nav()
             self.controller.focus(
                 "left",
@@ -1621,7 +1624,7 @@ class App:
             height=event.height,
         )
 
-        # No artificial left spacer in normal carousel mode.
+                                                            
         self.year_left_pad.configure(
             width=0
         )
@@ -1720,15 +1723,15 @@ class App:
             + visible
         )
 
-        # Leave a tiny visual margin at each edge.
+                                                  
         edge_margin = 8.0
 
         target_left = None
 
-        # Moving RIGHT:
-        # do not scroll while the focused year is still fully visible.
-        # Once it reaches/passes the right edge, move only enough
-        # to reveal it at the right side.
+                       
+                                                                      
+                                                                 
+                                         
         if direction > 0:
             if (
                 x + width
@@ -1742,8 +1745,8 @@ class App:
                     + edge_margin
                 )
 
-        # Moving LEFT:
-        # same behaviour mirrored.
+                      
+                                  
         elif direction < 0:
             if (
                 x
@@ -1755,8 +1758,8 @@ class App:
                     - edge_margin
                 )
 
-        # Initial focus / resize:
-        # only make sure the selected year is visible.
+                                 
+                                                      
         else:
             if (
                 x
@@ -1943,9 +1946,9 @@ class App:
             + viewport_height
         )
 
-        # Small safe margin, like a TV lazy grid. Focus travels freely through
-        # visible rows. Only when the focused row reaches an edge does the
-        # viewport move enough to reveal that whole row.
+                                                                              
+                                                                          
+                                                        
         edge_margin = 10.0
         target_top = None
 
@@ -2067,7 +2070,7 @@ class App:
 
     def clear_results(self):
         self.desktop_scroll_touched = False
-        # Stop any old lazy-load animation BEFORE touching the grid.
+                                                                    
         self.hide_loading_indicator()
 
         self.items.clear()
@@ -2079,7 +2082,7 @@ class App:
         self.photos.clear()
 
         for child in self.grid_frame.winfo_children():
-            # The loader is infrastructure, not a search-result card.
+                                                                     
             if (
                 self.grid_loading_exists()
                 and child == self.grid_loading
@@ -2091,7 +2094,7 @@ class App:
             except tk.TclError:
                 pass
 
-        # Defensive recreation in case Tk destroyed it for any external reason.
+                                                                               
         self.create_grid_loading()
 
         self.result_canvas.yview_moveto(0)
@@ -2116,6 +2119,8 @@ class App:
         label,
         year,
     ):
+        self.play_cancel.set()
+        self.play_preparing = False
         if self.view_mode == "search":
             self.save_last_search()
 
@@ -2130,8 +2135,8 @@ class App:
                 year - 1950
             )
 
-        # New filter/year/query cancels the previous background search
-        # and closes its browser fallback before using the same profile again.
+                                                                      
+                                                                              
         try:
             self.search_cancel.set()
         except Exception:
@@ -2146,7 +2151,7 @@ class App:
         self.initial_pages = 0
         self.empty_pages_skipped = 0
 
-        # clear_results() owns cancellation/reset of loader callbacks.
+                                                                      
         self.clear_results()
 
         self.results_title.configure(
@@ -2377,9 +2382,9 @@ class App:
                 "page",
                 token,
                 page,
-                cached,
+                cached["items"],
                 "cache",
-                None,
+                cached["stats"],
             ))
             return
 
@@ -2405,7 +2410,7 @@ class App:
                 sort_key,
                 duration_key,
                 page,
-                videos,
+                {"items": videos, "stats": stats},
             )
 
             log_event(
@@ -2451,117 +2456,6 @@ class App:
                 page,
                 str(exc),
             ))
-
-    def queue_catalog_metadata(self, item):
-        vid = item.get("id")
-        if not vid or vid in self.catalog_meta_pending:
-            return
-        cached = self.db.metadata(vid)
-        if cached and cached.get("rating") and cached.get("imdb_rating"):
-            return
-        self.catalog_meta_pending.add(vid)
-        self.catalog_meta_queue.put(item.copy())
-
-    def queue_missing_catalog_metadata(self):
-        for item in list(self.items):
-            if not item.get("short_rating"):
-                self.queue_catalog_metadata(item)
-
-    def catalog_metadata_loop(self):
-        while True:
-            item = self.catalog_meta_queue.get()
-            self.catalog_meta_gate.wait()
-            vid = item.get("id")
-            try:
-                cached = self.db.metadata(vid)
-                if cached and cached.get("rating") and cached.get("imdb_rating"):
-                    self.events.put(("catalog_metadata", vid, cached))
-                    continue
-                text, source = self.client.get_html(item["url"], False)
-                if not text:
-                    self.catalog_meta_gate.clear()
-                    self.events.put(("catalog_metadata_security", vid))
-                    continue
-                data, _ = parse_metadata(text)
-                self.db.save_metadata(vid, data)
-                self.events.put(("catalog_metadata", vid, data))
-                log_event("catalog_metadata", id=vid, source=source, rating=data.get("rating"), imdb=data.get("imdb_rating"))
-            except Exception as exc:
-                log_event("catalog_metadata_error", id=vid, error=str(exc))
-            finally:
-                self.catalog_meta_pending.discard(vid)
-                self.catalog_meta_queue.task_done()
-            time.sleep(0.45)
-
-    @staticmethod
-    def format_vote_count(value):
-        if value is None:
-            return ""
-        try:
-            return f"{int(value):,}".replace(",", " ")
-        except Exception:
-            return str(value)
-
-    def source_rating_text(
-        self,
-        data,
-    ):
-        lines = []
-
-        rating = data.get(
-            "rating"
-        )
-        cda_votes = data.get(
-            "cda_votes"
-        )
-
-        if rating:
-            line = (
-                f"CDA {rating} / 5"
-            )
-
-            if cda_votes is not None:
-                line += (
-                    " • "
-                    + self.format_vote_count(
-                        cda_votes
-                    )
-                    + " ocen"
-                )
-
-            lines.append(
-                line
-            )
-
-        imdb_rating = data.get(
-            "imdb_rating"
-        )
-        imdb_votes = data.get(
-            "imdb_votes"
-        )
-
-        if imdb_rating:
-            line = (
-                f"IMDb {imdb_rating} / 10"
-            )
-
-            if imdb_votes is not None:
-                line += (
-                    " • "
-                    + self.format_vote_count(
-                        imdb_votes
-                    )
-                    + " głosów"
-                )
-
-            lines.append(
-                line
-            )
-
-        return "\n".join(
-            lines
-        )
-
 
     def add_items(self, videos):
         for item in videos:
@@ -2641,8 +2535,6 @@ class App:
             self.card_rating_views[item["id"]] = rating_view
             self.card_footer_frames[item["id"]] = footer
             self.load_thumb(item, button, index)
-            if not item.get("short_rating"):
-                self.queue_catalog_metadata(item)
 
         for col in range(GRID_COLS):
             self.grid_frame.grid_columnconfigure(col, weight=1)
@@ -2704,16 +2596,7 @@ class App:
             except Exception:
                 pass
 
-        threading.Thread(
-            target=self.thumb_worker,
-            args=(
-                item["id"],
-                item["image"],
-                path,
-                index,
-            ),
-            daemon=True,
-        ).start()
+        self.thumbnail_pool.submit(self.thumb_worker, item["id"], item["image"], path, index)
 
     def thumb_worker(
         self,
@@ -2722,6 +2605,8 @@ class App:
         path,
         index,
     ):
+        if self.closed:
+            return
         try:
             response = httpx.get(
                 url,
@@ -2862,145 +2747,8 @@ class App:
         photo = self.photos.get(item["id"])
         self.detail_thumb.configure(image=photo or self.placeholder)
 
-        cached = self.db.metadata(item["id"])
-        if cached:
-            self.apply_metadata(item, cached)
-            self.detail_loading.configure(text="")
-            return
-
-        self.detail_loading.configure(text="⟳ Wczytywanie pełnego opisu…")
-        self.meta_token += 1
-        token = self.meta_token
-        if self.meta_after:
-            try:
-                self.root.after_cancel(self.meta_after)
-            except Exception:
-                pass
-        self.meta_after = self.root.after(
-            META_DELAY_MS,
-            lambda: threading.Thread(target=self.metadata_worker, args=(token, item.copy()), daemon=True).start(),
-        )
-
-
-    def metadata_worker(
-        self,
-        token,
-        item,
-    ):
-        try:
-            text, source = self.client.get_html(
-                item["url"],
-                False,
-            )
-
-            if not text:
-                self.events.put((
-                    "metadata_challenge",
-                    token,
-                    item["id"],
-                ))
-                return
-
-            data, _ = parse_metadata(text)
-            self.db.save_metadata(
-                item["id"],
-                data,
-            )
-
-            self.events.put((
-                "metadata",
-                token,
-                item["id"],
-                data,
-            ))
-
-            log_event(
-                "metadata",
-                id=item["id"],
-                source=source,
-                description_len=len(
-                    data["description"],
-                ),
-            )
-        except Exception as exc:
-            self.events.put((
-                "metadata_error",
-                token,
-                item["id"],
-                str(exc),
-            ))
-
-    def apply_metadata(self, item, data):
-        current = self.current_card_item()
-        if not current or current["id"] != item["id"]:
-            return
-
-        rating = (
-            data.get("rating")
-            or item.get(
-                "short_rating"
-            )
-        )
-
-        if normalize_rating(
-            rating
-        ) is not None:
-            item["short_rating"] = str(
-                rating
-            )
-            self.update_card_rating(
-                item,
-                rating,
-            )
-
-        self.set_detail_rating(
-            rating
-        )
-
-        self.detail_source_ratings.configure(
-            text=self.source_rating_text(
-                data
-            )
-        )
-
-        comment_count = data.get(
-            "comment_count"
-        )
-
-        if comment_count is None:
-            cached_comments = self.db.comments(
-                item["id"]
-            )
-
-            if cached_comments is not None:
-                comment_count = len(
-                    cached_comments
-                )
-
-        self.detail_comments_btn.configure(
-            text=self.comments_button_text(
-                comment_count
-            )
-        )
-
-        meta = []
-        if item.get("duration"):
-            meta.append(f"Czas: {item['duration']}")
-        position, total = self.db.history_position(item["id"])
-        if position > 5:
-            progress = f"Postęp: {self.format_time(position)}"
-            if total:
-                progress += f" / {self.format_time(total)}"
-            meta.append(progress)
-        self.detail_meta.configure(text="\n".join(meta))
-        self.detail_favorite_btn.configure(
-            text="♥ Usuń" if self.db.is_favorite(item["id"]) else "♡ Ulubione"
-        )
-        self.set_detail_text(
-            data.get("description", "").strip()
-            or item.get("short_description", "")
-            or "Brak opisu."
-        )
+                                                                               
+                                                                              
         self.detail_loading.configure(text="")
 
 
@@ -3062,6 +2810,17 @@ class App:
         self.movie_windows[item["id"]] = panel
         if mode == "comments":
             panel.request_comments()
+        else:
+            cached_full = self.db.metadata(item["id"])
+            if cached_full and cached_full.get("description"):
+                panel.set_description(cached_full.get("description"))
+            else:
+                panel.set_description_loading()
+                threading.Thread(
+                    target=self.description_worker,
+                    args=(item.copy(), panel),
+                    daemon=True,
+                ).start()
 
     def restore_card_focus(
         self,
@@ -3102,6 +2861,31 @@ class App:
         self.status.configure(text="Dodano do ulubionych." if state else "Usunięto z ulubionych.")
         return state
 
+    def description_worker(self, item, panel):
+        try:
+            text, source = self.client.get_html(item["url"], True)
+            data, _ = parse_metadata(text)
+            self.db.save_metadata(item["id"], data)
+            self.events.put((
+                "panel_description",
+                item["id"],
+                panel,
+                data.get("description") or item.get("short_description", ""),
+            ))
+            log_event(
+                "description",
+                id=item["id"],
+                source=source,
+                description_len=len(data.get("description") or ""),
+            )
+        except Exception as exc:
+            self.events.put((
+                "panel_description_error",
+                item["id"],
+                panel,
+                f"Nie udało się pobrać pełnego opisu: {exc}",
+            ))
+
     def load_comments_for_panel(self, item, panel):
         cached = self.db.comments(item["id"])
         if cached is not None:
@@ -3131,7 +2915,7 @@ class App:
 
     def comments_worker(self, item, panel):
         try:
-            text, source = self.client.get_html(item["url"], False)
+            text, source = self.client.get_html(item["url"], True)
             if not text:
                 self.events.put(("comments_error", item["id"], panel, "Komentarze wymagają aktywnej sesji CDA."))
                 return
@@ -3166,7 +2950,7 @@ class App:
             for item in self.items:
                 item["favorite"] = self.db.is_favorite(item["id"])
             self.clear_results()
-            # Re-run the current search to avoid rebuilding cards from stale state.
+                                                                                   
             self.start_search(self.query, self.query_label, self.selected_year)
 
     def set_remove_button(self, mode):
@@ -3237,6 +3021,8 @@ class App:
             self.set_remove_button(mode)
 
     def show_recent(self):
+        self.play_cancel.set()
+        self.play_preparing = False
         self.save_last_search()
         self.cancel_active_search(
             "Ostatnio oglądane",
@@ -3270,6 +3056,8 @@ class App:
             )
 
     def show_favorites(self):
+        self.play_cancel.set()
+        self.play_preparing = False
         self.save_last_search()
         self.cancel_active_search(
             "Ulubione",
@@ -3303,24 +3091,30 @@ class App:
             )
 
     def play_item(self, item):
+        if self.play_preparing:
+            return
+        self.play_preparing = True
+        self.play_cancel = threading.Event()
         self.status.configure(
             text=f"Przygotowanie: {item['title']}",
         )
 
         threading.Thread(
             target=self.play_worker,
-            args=(item.copy(),),
+            args=(item.copy(), self.play_cancel),
             daemon=True,
         ).start()
 
-    def play_worker(self, item):
+    def play_worker(self, item, cancel_event):
         try:
             page_html, source = self.client.get_html(
                 item["url"],
                 True,
+                cancel_event=cancel_event,
+                expect_player=True,
             )
 
-            metadata, pdata = parse_metadata(
+            pdata = parse_player_data(
                 page_html,
             )
 
@@ -3329,19 +3123,15 @@ class App:
                     "Brak player_data.",
                 )
 
-            if pdata.get("premium"):
+            if pdata.get("premium") in (True, 1, "1", "true"):
                 raise RuntimeError(
                     "Materiał Premium - pominięty.",
                 )
 
-            self.db.save_metadata(
-                item["id"],
-                metadata,
-            )
-
             kind, quality, log_path = self.player.play(
                 item,
                 pdata,
+                cancel_event,
             )
 
             self.events.put((
@@ -3356,18 +3146,14 @@ class App:
                 ),
             ))
 
-            self.events.put((
-                "metadata_direct",
-                item["id"],
-                metadata,
-            ))
-
             log_event(
                 "play_page_source",
                 id=item["id"],
                 source=source,
                 log=str(log_path),
             )
+        except SearchCancelled:
+            pass
         except Exception as exc:
             log_event(
                 "play_error",
@@ -3378,6 +3164,19 @@ class App:
                 "error",
                 str(exc),
             ))
+
+        finally:
+            self.events.put(("play_prepared", cancel_event))
+
+    def close(self):
+        self.closed = True
+        self.search_cancel.set()
+        self.play_cancel.set()
+        self.thumbnail_pool.shutdown(wait=False, cancel_futures=True)
+        self.root.destroy()
+        self.player.stop()
+        if self.client._native_webview is not None:
+            self.client._native_webview.stop()
 
     def toggle_favorite_current(self):
         item = self.current_card_item()
@@ -3408,6 +3207,7 @@ class App:
         )
 
     def pump(self):
+        if self.closed: return
         try:
             while True:
                 event = self.events.get_nowait()
@@ -3442,9 +3242,9 @@ class App:
 
                     self.add_items(videos)
 
-                    # A page with HTML results but zero FREE videos is not the
-                    # end. It may simply contain only Premium/folders.
-                    # Skip it automatically and continue to pN+1.
+                                                                              
+                                                                      
+                                                                 
                     page_has_results = (
                         raw_count > 0
                     )
@@ -3529,8 +3329,8 @@ class App:
                             loading=False,
                         )
 
-                        # Initial fill: only fetch enough pages to populate a
-                        # useful first screen. Later pages are edge-triggered.
+                                                                             
+                                                                              
                         if (
                             len(self.items) < INITIAL_TARGET
                             and self.initial_pages < INITIAL_MAX_PAGES
@@ -3543,7 +3343,7 @@ class App:
                 elif kind == "page_cancelled":
                     _, token, page = event
 
-                    # A cancelled/stale search is intentionally silent.
+                                                                       
                     if token == self.search_token:
                         self.loading_page = False
                         self.hide_loading_indicator()
@@ -3589,32 +3389,6 @@ class App:
                                 image=photo,
                             )
 
-                elif kind == "catalog_metadata":
-                    _, vid, data = event
-                    item = self.items_by_id.get(vid)
-                    if item is not None:
-                        rating = data.get("rating")
-                        if normalize_rating(
-                            rating
-                        ) is not None:
-                            item["short_rating"] = str(
-                                rating
-                            )
-                            self.update_card_rating(
-                                item,
-                                rating,
-                            )
-                        current = self.current_card_item()
-                        if current and current.get("id") == vid:
-                            self.apply_metadata(current, data)
-
-                elif kind == "catalog_metadata_security":
-                    self.set_left_status(
-                        "Weryfikacja zabezpieczeń CDA",
-                        "Oceny i IMDb w tle wstrzymane",
-                        loading=False,
-                    )
-
                 elif kind == "security_verification":
                     _, state, url = event
                     if state in ("start", "native_hidden"):
@@ -3638,67 +3412,25 @@ class App:
                     elif state == "done":
                         self.set_left_status(
                             "Weryfikacja zakończona",
-                            "Wznawiam oceny katalogu",
+                            "Sesja CDA gotowa",
                             loading=False,
                         )
-                        self.catalog_meta_gate.set()
-                        self.queue_missing_catalog_metadata()
 
-                elif kind == "metadata":
-                    _, token, vid, data = event
+                elif kind == "panel_description":
+                    _, vid, panel, description = event
+                    try:
+                        if panel.win.winfo_exists():
+                            panel.set_description(description)
+                    except Exception:
+                        pass
 
-                    if token == self.meta_token:
-                        current = self.current_card_item()
-
-                        if (
-                            current
-                            and current["id"] == vid
-                        ):
-                            self.apply_metadata(
-                                current,
-                                data,
-                            )
-
-                elif kind == "metadata_challenge":
-                    _, token, vid = event
-
-                    if token == self.meta_token:
-                        current = self.current_card_item()
-
-                        if (
-                            current
-                            and current["id"] == vid
-                        ):
-                            self.detail_loading.configure(
-                                text="Weryfikacja zabezpieczeń CDA wymagana.",
-                            )
-
-                elif kind == "metadata_error":
-                    _, token, vid, error = event
-
-                    if token == self.meta_token:
-                        current = self.current_card_item()
-
-                        if (
-                            current
-                            and current["id"] == vid
-                        ):
-                            self.detail_loading.configure(
-                                text="Nie udało się pobrać pełnego opisu.",
-                            )
-
-                elif kind == "metadata_direct":
-                    _, vid, data = event
-                    current = self.current_card_item()
-
-                    if (
-                        current
-                        and current["id"] == vid
-                    ):
-                        self.apply_metadata(
-                            current,
-                            data,
-                        )
+                elif kind == "panel_description_error":
+                    _, vid, panel, error = event
+                    try:
+                        if panel.win.winfo_exists():
+                            panel.set_description_error(error)
+                    except Exception:
+                        pass
 
                 elif kind == "comments":
                     _, vid, panel, comments = event
@@ -3731,6 +3463,14 @@ class App:
                             panel.set_comments_error(error)
                     except Exception:
                         pass
+
+                elif kind == "play_prepared":
+                    if event[1] is self.play_cancel:
+                        self.play_preparing = False
+
+                elif kind == "play_end":
+                    if self.view_mode == "recent":
+                        self.show_recent()
 
                 elif kind == "status":
                     self.status.configure(
