@@ -32,27 +32,13 @@ class Player:
             return None
         video = pdata["video"]
 
-        # Match Android TV: use sources already present in player_data first.
-        # videoGetLink is only a fallback when player_data has no usable source.
+        # Prefer the structured player_data source that Android TV also sees.
+        # If the MPD cannot be reduced to direct ranges, pass the whole MPD to mpv.
         dash = self._normalize_stream_url(item["url"], video.get("manifest"))
         if dash:
-            resolved = self._mpd_tracks(item, dash, None)
+            resolved = self._candidate_from_stream(item, dash, None, "auto", "player_data")
             if resolved:
-                resolved.setdefault("quality", "auto")
-                resolved["source"] = "player_data-dash"
                 return resolved
-
-        hls = self._normalize_stream_url(item["url"], video.get("manifest_apple"))
-        if hls:
-            selected_hls = self._hls_candidate(item, hls)
-            if selected_hls:
-                return {
-                    "kind": "hls",
-                    "quality": "auto",
-                    "video": selected_hls,
-                    "audio": None,
-                    "source": "player_data-hls",
-                }
 
         direct = self._normalize_stream_url(item["url"], video.get("file"))
         if direct and direct.startswith(("http://", "https://")):
@@ -64,23 +50,35 @@ class Player:
                 "source": "player_data-file",
             }
 
+        # Then try every quality endpoint. Do not stop on an unusable candidate.
         qualities = video.get("qualities", {})
-        if not isinstance(qualities, dict):
-            return None
+        if isinstance(qualities, dict):
+            candidates = []
+            for label, value in qualities.items():
+                match = re.search(r"(\d+)", str(label))
+                candidates.append((int(match.group(1)) if match else 0, str(label), value))
+            candidates.sort(reverse=True)
+            for height, label, value in candidates:
+                stream = self.client.post_video_get_link(item, pdata, value)
+                if not stream:
+                    continue
+                resolved = self._candidate_from_stream(item, stream, height, label, "videoGetLink")
+                if resolved:
+                    return resolved
 
-        candidates = []
-        for label, value in qualities.items():
-            match = re.search(r"(\d+)", str(label))
-            candidates.append((int(match.group(1)) if match else 0, str(label), value))
-        candidates.sort(reverse=True)
-
-        for height, label, value in candidates:
-            stream = self.client.post_video_get_link(item, pdata, value)
-            if not stream:
-                continue
-            resolved = self._candidate_from_stream(item, stream, height, label, "videoGetLink")
-            if resolved:
-                return resolved
+        # Apple HLS is deliberately last on desktop. WebKit/WKWebView often exposes
+        # it as currentSrc even when the structured player_data also contains DASH.
+        hls = self._normalize_stream_url(item["url"], video.get("manifest_apple"))
+        if hls:
+            selected_hls = self._hls_candidate(item, hls)
+            if selected_hls:
+                return {
+                    "kind": "hls",
+                    "quality": "auto",
+                    "video": selected_hls,
+                    "audio": None,
+                    "source": "player_data-hls",
+                }
         return None
 
     @staticmethod
@@ -104,9 +102,16 @@ class Player:
         if clean.endswith(".mpd"):
             resolved = self._mpd_tracks(item, stream, height)
             if resolved:
-                resolved["quality"] = label
+                resolved["quality"] = label or resolved.get("quality", "auto")
                 resolved["source"] = source + "-dash"
-            return resolved
+                return resolved
+            return {
+                "kind": "dash",
+                "quality": label or (f"{height}p" if height else "auto"),
+                "video": stream,
+                "audio": None,
+                "source": source + "-dash-direct",
+            }
         if clean.endswith(".m3u8"):
             selected = self._hls_candidate(item, stream)
             if selected:
@@ -125,10 +130,6 @@ class Player:
             response.raise_for_status()
             text = response.text
             final_url = str(response.url)
-            if self._hls_has_unsupported_key(text):
-                log_event("hls_source_skipped", id=item["id"], reason="unsupported-key-scheme")
-                return None
-
             variants = []
             lines = [line.strip() for line in text.splitlines()]
             for index, line in enumerate(lines):
@@ -143,25 +144,13 @@ class Player:
                     break
             if not variants:
                 return final_url
-
             variants.sort(key=lambda entry: entry[0], reverse=True)
-            selected = variants[0][1]
-            child = client.get(selected, headers={"Referer": item["url"]})
-            child.raise_for_status()
-            if self._hls_has_unsupported_key(child.text):
-                log_event("hls_source_skipped", id=item["id"], reason="unsupported-key-scheme")
-                return None
-            return str(child.url)
+            return variants[0][1]
         except Exception as exc:
             log_event("hls_probe_error", id=item["id"], error=type(exc).__name__)
             return manifest_url
         finally:
             client.close()
-
-    @staticmethod
-    def _hls_has_unsupported_key(text):
-        value = (text or "").lower()
-        return "skd://" in value or "com.apple.streamingkeydelivery" in value
 
     def _mpd_tracks(
         self,
@@ -187,9 +176,6 @@ class Player:
                 response.content
             )
 
-            if root.findall(".//{*}ContentProtection"):
-                log_event("mpd_source_skipped", id=item["id"], reason="content-protection")
-                return None
             if root.findall(".//{*}SegmentTemplate") or root.findall(".//{*}SegmentList") or len(root.findall("{*}Period")) != 1:
                 return {
                     "kind": "dash",

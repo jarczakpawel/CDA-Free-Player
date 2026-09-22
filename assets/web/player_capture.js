@@ -2,7 +2,7 @@
     if (window.__CDA_FP_CAPTURE_INSTALLED) return;
     window.__CDA_FP_CAPTURE_INSTALLED = true;
     var selector = '[player_data],[data-player-data],[data-player_data]';
-    function emit(value) {
+    function emit(value, structured) {
         try {
             if (!value) return '';
             var raw = typeof value === 'string' ? value : JSON.stringify(value);
@@ -22,6 +22,7 @@
             }) ||
                 (video.hash2 && video.qualities && (video.ts || (data.api && data.api.ts)));
             if (!ready) return '';
+            if (structured) window.__CDA_FP_STRUCTURED = raw;
             if (raw !== window.__CDA_FP_CAPTURED) {
                 window.__CDA_FP_CAPTURED = raw;
                 if (window.CdaFreePlayerBridge) {
@@ -46,12 +47,12 @@
         else if (/\.m3u8(?:\?|$)/i.test(clean)) video.manifest_apple = value;
         else if (/\.(?:mp4|m4v)(?:\?|$)/i.test(clean)) video.file = value;
         else return '';
-        return emit({video: video});
+        return emit({video: video}, false);
     }
     function one(node) {
         if (!node || node.nodeType !== 1) return '';
         return emit(node.getAttribute('player_data') || node.getAttribute('data-player-data') ||
-            node.getAttribute('data-player_data'));
+            node.getAttribute('data-player_data'), true);
     }
     function scan(node) {
         var found = one(node);
@@ -79,16 +80,29 @@
         } catch (error) {}
         return '';
     }
-    window.__CDA_FP_READ_PLAYER = function read() {
-        var found = window.__CDA_FP_CAPTURED || scan(document) ||
-            emit(window.player_data || window.playerData || window.__PLAYER_DATA__) || scanMedia(document);
+    window.__CDA_FP_READ_STRUCTURED = function readStructured() {
+        var found = window.__CDA_FP_STRUCTURED || scan(document) ||
+            emit(window.player_data || window.playerData || window.__PLAYER_DATA__, true);
         if (found) return found;
         for (var i = 0; i < window.frames.length; i++) {
             try {
                 var frame = window.frames[i];
-                found = frame.__CDA_FP_READ_PLAYER ? frame.__CDA_FP_READ_PLAYER() :
-                    scan(frame.document) || emit(frame.player_data || frame.playerData || frame.__PLAYER_DATA__) ||
-                    scanMedia(frame.document);
+                found = frame.__CDA_FP_READ_STRUCTURED ? frame.__CDA_FP_READ_STRUCTURED() :
+                    scan(frame.document) || emit(frame.player_data || frame.playerData || frame.__PLAYER_DATA__, true);
+                if (found) return found;
+            } catch (error) {}
+        }
+        return '';
+    };
+    window.__CDA_FP_READ_PLAYER = function read() {
+        var found = window.__CDA_FP_READ_STRUCTURED();
+        if (found) return found;
+        found = window.__CDA_FP_CAPTURED || scanMedia(document);
+        if (found) return found;
+        for (var i = 0; i < window.frames.length; i++) {
+            try {
+                var frame = window.frames[i];
+                found = frame.__CDA_FP_READ_PLAYER ? frame.__CDA_FP_READ_PLAYER() : scanMedia(frame.document);
                 if (found) return found;
             } catch (error) {}
         }
@@ -98,7 +112,7 @@
         for (var i = 0; i < changes.length; i++) {
             var change = changes[i];
             if (change.type === 'attributes' && change.attributeName !== 'src') {
-                if (!one(change.target) && !window.__CDA_FP_CAPTURED) emit(change.oldValue);
+                if (!one(change.target) && !window.__CDA_FP_STRUCTURED) emit(change.oldValue, true);
             }
             for (var j = 0; j < change.addedNodes.length; j++) scan(change.addedNodes[j]);
         }

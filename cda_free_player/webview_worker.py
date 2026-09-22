@@ -115,7 +115,13 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
                     if capture_url != current_url:
                         window.run_js(capture)
                         capture_url = current_url
-                    raw = window.evaluate_js("window.__CDA_FP_READ_PLAYER ? window.__CDA_FP_READ_PLAYER() : ''")
+                    raw = window.evaluate_js(
+                        "window.__CDA_FP_READ_STRUCTURED ? window.__CDA_FP_READ_STRUCTURED() : ''"
+                    ) or ""
+                    if not raw and time.monotonic() - started >= 1.5:
+                        raw = window.evaluate_js(
+                            "window.__CDA_FP_READ_PLAYER ? window.__CDA_FP_READ_PLAYER() : ''"
+                        ) or ""
                 except Exception:
                     raw = ""
                 if raw:
