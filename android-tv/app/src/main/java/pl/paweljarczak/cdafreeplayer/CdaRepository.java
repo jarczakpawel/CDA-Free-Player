@@ -277,15 +277,9 @@ public final class CdaRepository {
                 parser.execute(() -> {
                     if (closed || token.isCancelled()) return;
                     MovieMetadata parsed = CdaParser.parseMetadata(html);
-                    ArrayList<CommentItem> comments = CdaParser.parseComments(html);
                     logMetadata(m.id, via ? "webview" : "http", html, parsed);
                     MovieMetadata md = mergeMetadata(parsed, sessionMetadata(m.id));
-                    Integer parsedCommentCount = md.commentCount;
-                    if (parsedCommentCount == null && !comments.isEmpty()) md.commentCount = comments.size();
                     putSessionMetadata(m.id, md);
-                    if (!comments.isEmpty() || parsedCommentCount != null) {
-                        synchronized (commentsCache) { commentsCache.put(m.id, new ArrayList<>(comments)); }
-                    }
                     deliver(token, () -> listener.onMetadata(md));
                 });
             }
@@ -306,7 +300,7 @@ public final class CdaRepository {
         }
         RequestToken token = new RequestToken();
         requests.add(token);
-        gateway.fetch(m.url, true, token, new CdaGateway.Callback() {
+        gateway.fetchComments(m.url, token, new CdaGateway.Callback() {
             @Override public void onHtml(String html, boolean via) {
                 if (closed || token.isCancelled()) return;
                 parser.execute(() -> {

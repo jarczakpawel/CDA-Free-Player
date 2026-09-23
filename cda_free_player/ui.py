@@ -2954,6 +2954,7 @@ class App:
                 item,
                 view,
             ),
+            avatar_pool=self.thumbnail_pool,
             on_close=lambda: self.restore_card_focus(
                 self.last_card_index
             ),
@@ -3017,17 +3018,12 @@ class App:
         try:
             text, source = self.client.get_html(item["url"], True)
             data, _ = parse_metadata(text)
-            comments = parse_comments(text)
-            parsed_comment_count = data.get("comment_count")
-            if parsed_comment_count is None and comments:
-                data["comment_count"] = len(comments)
-            cached_comments = comments if comments or parsed_comment_count is not None else None
             self.events.put((
                 "panel_description",
                 item["id"],
                 panel,
                 data,
-                cached_comments,
+                None,
                 data.get("description") or item.get("short_description", ""),
             ))
             log_event(
@@ -3072,7 +3068,7 @@ class App:
 
     def comments_worker(self, item, panel):
         try:
-            text, source = self.client.get_html(item["url"], True)
+            text, source = self.client.get_comments_html(item["url"])
             if not text:
                 self.events.put(("comments_error", item["id"], panel, "Komentarze wymagają aktywnej sesji CDA."))
                 return

@@ -65,6 +65,21 @@ public final class CdaGateway {
         fetchHttp(url, true, true, token, cb);
     }
 
+    public void fetchComments(String url, RequestToken token, Callback cb) {
+        fetch(url, true, token, new Callback() {
+            @Override public void onHtml(String html, boolean viaWebView) {
+                if (html != null && (html.contains("dobierzWszystkieOdpowiedzi") || html.contains("Pokaż wszystkie odpowiedzi"))) {
+                    post(token, () -> web.fetchComments(url, token, bridge(token, cb)));
+                } else {
+                    cb.onHtml(html, viaWebView);
+                }
+            }
+            @Override public void onError(String e) { cb.onError(e); }
+            @Override public void onChallengeRequired() { cb.onChallengeRequired(); }
+            @Override public void onVerification(boolean interactive) { cb.onVerification(interactive); }
+        });
+    }
+
     private void fetchHttp(String url, boolean catalog, boolean allowWeb, RequestToken token, Callback cb) {
         if (closed || token != null && token.isCancelled()) return;
         net.execute(() -> {

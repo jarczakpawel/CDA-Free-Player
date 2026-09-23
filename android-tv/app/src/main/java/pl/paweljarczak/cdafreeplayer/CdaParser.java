@@ -345,11 +345,53 @@ public final class CdaParser {
         return md;
     }
 
-    public static java.util.ArrayList<CommentItem> parseComments(String html){
-        java.util.ArrayList<CommentItem> out=new java.util.ArrayList<>(); Document doc=Jsoup.parse(html); Element box=doc.selectFirst(".comments-container"); if(box==null)box=doc.selectFirst("#cdaComments"); if(box==null)return out; HashSet<String> seen=new HashSet<>();
-        for(Element n:box.select(".komentarz.comment,.komentarz,div.comment[id]")){String key=n.id().isEmpty()?n.cssSelector():n.id();if(!seen.add(key))continue; Element body=n.selectFirst(".tresc,.commentText,.comment-body");if(body==null)continue; Element bodyCopy=body.clone();for(Element e:bodyCopy.select("a,button,[role=button],.reply,.reply-link,.replyComment,.comment-reply,.ansComment")){if("Odpowiedz".equalsIgnoreCase(e.text().trim()))e.remove();} CommentItem c=new CommentItem(); Element a=n.selectFirst(".commentHeader .anonim,.commentHeader a,.commentAuthor,.user-name");Element date=n.selectFirst(".commentDate1,.commentDate,time");Element score=n.selectFirst(".commentRate"); c.author=a==null?"anonim":a.text().trim();c.date=date==null?"":date.text().trim();c.score=score==null?"":score.text().trim();c.text=clean(bodyCopy.html());if(!c.text.isEmpty())out.add(c);if(out.size()>=60)break;}
+    public static java.util.ArrayList<CommentItem> parseComments(String html) {
+        java.util.ArrayList<CommentItem> out = new java.util.ArrayList<>();
+        Document doc = Jsoup.parse(html);
+        Element box = doc.selectFirst(".comments-container");
+        if (box == null) box = doc.selectFirst("#cdaComments");
+        if (box == null) return out;
+        HashSet<String> seen = new HashSet<>();
+        for (Element n : box.select(".komentarz.comment,.komentarz,div.comment[id]")) {
+            String key = n.id().isEmpty() ? n.cssSelector() : n.id();
+            if (!seen.add(key)) continue;
+            Element body = n.selectFirst(".tresc,.commentText,.comment-body");
+            if (body == null) continue;
+            Element bodyCopy = body.clone();
+            bodyCopy.select("script,style,.ansComment,.reply,.reply-link,.replyComment,.comment-reply").remove();
+            for (Element e : bodyCopy.select("a,button,[role=button]")) {
+                if ("Odpowiedz".equalsIgnoreCase(e.text().trim())) e.remove();
+            }
+            CommentItem c = new CommentItem();
+            Element a = n.selectFirst(".commentHeader .anonim,.commentHeader a,.commentAuthor,.user-name");
+            Element date = n.selectFirst(".commentDate1,.commentDate,time");
+            Element score = n.selectFirst(".commentRate");
+            Element avatar = n.selectFirst(".commentAvatar img");
+            Element header = n.selectFirst(".commentHeader");
+            c.author = a == null ? "anonim" : a.text().trim();
+            c.date = date == null ? "" : date.text().trim();
+            c.score = score == null ? "" : score.text().trim();
+            c.text = clean(bodyCopy.html());
+            c.reply = n.hasClass("subcomment");
+            if (header != null) {
+                for (Element span : header.select("span")) {
+                    if (span.attr("style").toLowerCase(Locale.ROOT).contains("monospace")) {
+                        c.ip = span.text().trim();
+                        break;
+                    }
+                }
+            }
+            if (avatar != null) {
+                String src = firstNonEmpty(avatar.attr("src"), avatar.attr("data-src")).trim();
+                if (src.startsWith("//")) src = "https:" + src;
+                else if (src.startsWith("/")) src = "https://www.cda.pl" + src;
+                c.avatar = src;
+            }
+            if (!c.text.isEmpty()) out.add(c);
+        }
         return out;
     }
+
 
     public static PlayerData parsePlayerData(String html) {
         Document doc = Jsoup.parse(html == null ? "" : html);

@@ -843,7 +843,7 @@ def parse_metadata(page_html):
     }, pdata
 
 
-def parse_comments(page_html, limit=60):
+def parse_comments(page_html, limit=None):
     soup = BeautifulSoup(page_html, "html.parser")
     container = soup.select_one(".comments-container")
     if container is None:
@@ -860,35 +860,46 @@ def parse_comments(page_html, limit=60):
         if ident in seen:
             continue
         seen.add(ident)
+        header = node.select_one(".commentHeader")
         author_node = node.select_one(".commentHeader .anonim, .commentHeader a, .commentAuthor, .user-name")
         date_node = node.select_one(".commentDate1, .commentDate, time")
         rate_node = node.select_one(".commentRate")
         text_node = node.select_one(".tresc, .commentText, .comment-body")
+        avatar_node = node.select_one(".commentAvatar img")
         if text_node is None:
             continue
         clone = BeautifulSoup(str(text_node), "html.parser")
-        for bad in clone.select("script, style"):
+        for bad in clone.select("script, style, .ansComment, .reply, .reply-link, .replyComment, .comment-reply"):
             bad.decompose()
-        for reply in clone.select("a, button, [role=button], .ansComment, .reply, .reply-link, .replyComment, .comment-reply"):
+        for reply in clone.select("a, button, [role=button]"):
             if reply.get_text(" ", strip=True).casefold() == "odpowiedz":
                 reply.decompose()
         text = clean_description(str(clone))
         if not text:
             continue
+        ip = ""
+        if header is not None:
+            for span in header.select("span"):
+                if "monospace" in (span.get("style") or "").casefold():
+                    ip = span.get_text(" ", strip=True)
+                    break
+        avatar = ""
+        if avatar_node is not None:
+            avatar = (avatar_node.get("src") or avatar_node.get("data-src") or "").strip()
+            if avatar.startswith("//"):
+                avatar = "https:" + avatar
+            elif avatar.startswith("/"):
+                avatar = BASE.rstrip("/") + avatar
         result.append({
             "author": clean_description(str(author_node)) if author_node else "anonim",
+            "ip": ip,
             "date": date_node.get_text(" ", strip=True) if date_node else "",
-            "rate": (
-                rate_node.get_text(
-                    " ",
-                    strip=True,
-                )
-                if rate_node
-                else ""
-            ),
+            "rate": rate_node.get_text(" ", strip=True) if rate_node else "",
             "text": text,
+            "avatar": avatar,
+            "reply": "subcomment" in (node.get("class") or []),
         })
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -1077,6 +1088,25 @@ class CdaClient:
                 "Weryfikacja CDA wymaga WebView, ale nie udało się go uruchomić: "
                 f"{exc}"
             )
+
+    def get_comments_html(self, url, cancel_event=None):
+        text, source = self.get_html(url, True, cancel_event)
+        if not text or (
+            "dobierzWszystkieOdpowiedzi" not in text
+            and "Pokaż wszystkie odpowiedzi" not in text
+        ):
+            return text, source
+        native = self.native_webview().fetch(
+            url,
+            cancel_event,
+            expand_comments=True,
+        )
+        cookies = native.get("cookies", [])
+        user_agent = native.get("user_agent", "")
+        if user_agent:
+            self.save_session(cookies, user_agent)
+        self.events.put(("security_verification", "done", url))
+        return native.get("html", ""), "native-webview-comments"
 
 
     def search_url(

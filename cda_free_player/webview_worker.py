@@ -148,6 +148,7 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
     def fetch(req):
         request_id, url = req["id"], req["url"]
         expect_player = req.get("expect_player", False)
+        expand_comments = req.get("expand_comments", False)
         conn.send({"type": "event", "event": "loading", "id": request_id, "url": url})
         loaded.clear()
         window.hide()
@@ -155,9 +156,13 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
         deadline = time.monotonic() + 120
         clean_since = 0
         shown = False
+        challenge_since = 0.0
+        challenge_reported = False
         html = ""
         capture_url = ""
         started = time.monotonic()
+        comment_expand_started = 0.0
+        comment_expand_done_since = 0.0
 
         while time.monotonic() < deadline:
             if not loaded.wait(0.20):
@@ -186,13 +191,20 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
 
             if is_challenge(probe):
                 clean_since = 0
-                if not shown:
-                    shown = True
+                now = time.monotonic()
+                if not challenge_since:
+                    challenge_since = now
+                if not challenge_reported:
+                    challenge_reported = True
                     conn.send({"type": "event", "event": "interactive", "id": request_id, "url": current_url})
+                if not shown and now - challenge_since >= 10.0:
+                    shown = True
                     window.set_title("CDA Free Player - Weryfikacja zabezpieczeń")
                     show_verification()
                 time.sleep(0.20)
                 continue
+
+            challenge_since = 0.0
 
             if expect_player:
                 try:
@@ -218,6 +230,34 @@ def run_webview_worker(conn, storage, icon, gui, script_path):
             if time.monotonic() - clean_since < settle:
                 time.sleep(0.15)
                 continue
+
+            if expand_comments:
+                try:
+                    expand_state = native_eval(
+                        "(function(){try{"
+                        "var links=Array.prototype.slice.call(document.querySelectorAll('a[onclick*=\"dobierzWszystkieOdpowiedzi\"]')).filter(function(a){var s=getComputedStyle(a);return s.display!=='none'&&s.visibility!=='hidden';});"
+                        "if(!links.length)return 'DONE';"
+                        "var started=0;links.forEach(function(a){if(a.getAttribute('data-cdafp-expanded')==='1')return;"
+                        "a.setAttribute('data-cdafp-expanded','1');try{if(typeof window.dobierzWszystkieOdpowiedzi==='function'){"
+                        "window.dobierzWszystkieOdpowiedzi(a);started++;}else{a.click();started++;}}catch(e){}});"
+                        "return 'WAIT:'+links.length+':'+started;}catch(e){return 'ERR';}})()"
+                    ) or ""
+                except Exception:
+                    expand_state = "ERR"
+                now = time.monotonic()
+                if expand_state.startswith("WAIT:"):
+                    comment_expand_done_since = 0.0
+                    if not comment_expand_started:
+                        comment_expand_started = now
+                    if now - comment_expand_started < 8.0:
+                        time.sleep(0.20)
+                        continue
+                elif expand_state == "DONE" and comment_expand_started:
+                    if not comment_expand_done_since:
+                        comment_expand_done_since = now
+                    if now - comment_expand_done_since < 0.45:
+                        time.sleep(0.15)
+                        continue
 
             try:
                 html = native_eval(

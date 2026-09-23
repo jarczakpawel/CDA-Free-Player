@@ -74,9 +74,10 @@ public final class CdaWebSession {
         final String url;
         final RequestToken token;
         final Callback cb;
-        final boolean expectPlayer;
-        Job(String u, RequestToken t, Callback c, boolean player) {
-            url = u; token = t; cb = c; expectPlayer = player;
+        final boolean expectPlayer, expandComments;
+        long commentExpandStarted, commentExpandDoneSince;
+        Job(String u, RequestToken t, Callback c, boolean player, boolean comments) {
+            url = u; token = t; cb = c; expectPlayer = player; expandComments = comments;
         }
     }
 
@@ -254,11 +255,15 @@ public final class CdaWebSession {
     public void markFullSitePrepared() { fullSitePrepared = true; }
 
     public void fetch(String url, RequestToken token, Callback cb) {
-        enqueue(new Job(url, token, cb, false));
+        enqueue(new Job(url, token, cb, false, false));
     }
 
     public void fetchPlayer(String url, RequestToken token, Callback cb) {
-        enqueue(new Job(url, token, cb, true));
+        enqueue(new Job(url, token, cb, true, false));
+    }
+
+    public void fetchComments(String url, RequestToken token, Callback cb) {
+        enqueue(new Job(url, token, cb, false, true));
     }
 
     private void enqueue(Job job) {
@@ -345,6 +350,7 @@ public final class CdaWebSession {
         job.inspecting = true;
         if (fullSiteBootstrap) inspectFullSiteBootstrap(job);
         else if (job.expectPlayer) inspectPlayer(job);
+        else if (job.expandComments) inspectComments(job);
         else inspectPage(job);
     }
 
@@ -461,6 +467,64 @@ public final class CdaWebSession {
                                 "; signal=" + hasPlayerSignal(html));
                         finishCurrent(job, html);
                     });
+        });
+    }
+
+    private void inspectComments(final Job job) {
+        String deep = challengeSince == 0L ?
+                "var s=(document.body&&document.body.innerText.length<4096?document.body.innerText:'').toLowerCase();" +
+                "if(s.indexOf('checking if you are not a bot')>=0||s.indexOf('verify you are human')>=0||s.indexOf('przeprowadzanie weryfikacji zabezpieczeń')>=0)return 'CF';" : "";
+        String script = "(function(){try{" +
+                "if(document.querySelector('#challenge-running,#challenge-form,.cf-challenge,iframe[src*=\"challenges.cloudflare.com\"]')||" +
+                "(document.title||'').toLowerCase().indexOf('just a moment')>=0)return 'CF';" + deep +
+                "if(document.readyState!=='complete')return 'LOAD';" +
+                "var links=Array.prototype.slice.call(document.querySelectorAll('a[onclick*=\"dobierzWszystkieOdpowiedzi\"]')).filter(function(a){var s=getComputedStyle(a);return s.display!=='none'&&s.visibility!=='hidden';});" +
+                "var started=0;links.forEach(function(a){if(a.getAttribute('data-cdafp-expanded')==='1')return;" +
+                "a.setAttribute('data-cdafp-expanded','1');try{if(typeof window.dobierzWszystkieOdpowiedzi==='function'){" +
+                "window.dobierzWszystkieOdpowiedzi(a);started++;}else{a.click();started++;}}catch(e){}});" +
+                "return 'OK:'+links.length+':'+started;}catch(e){return 'ERR';}})()";
+        web.evaluateJavascript(script, value -> {
+            job.inspecting = false;
+            if (job != current || web == null) return;
+            String state = decode(value);
+            long now = SystemClock.elapsedRealtime();
+            if ("CF".equals(state)) {
+                cleanSince = 0L;
+                markChallenge(job, now);
+                showVerificationWhenNeeded(job, now);
+                scheduleInspect(job, CHALLENGE_RETRY_MS);
+                return;
+            }
+            if (!state.startsWith("OK:")) {
+                scheduleInspect(job, INSPECT_RETRY_MS);
+                return;
+            }
+            markChallengeCleared(now);
+            if (cleanSince == 0L) cleanSince = now;
+            if (now - cleanSince < NORMAL_SETTLE_MS) {
+                scheduleInspect(job, INSPECT_RETRY_MS);
+                return;
+            }
+            String[] parts = state.split(":", 3);
+            int links = 0;
+            try { links = Integer.parseInt(parts[1]); } catch (Exception ignored) {}
+            if (links > 0) {
+                job.commentExpandDoneSince = 0L;
+                if (job.commentExpandStarted == 0L) job.commentExpandStarted = now;
+                if (now - job.commentExpandStarted < 8000L) {
+                    scheduleInspect(job, INSPECT_RETRY_MS);
+                    return;
+                }
+            } else if (job.commentExpandStarted != 0L) {
+                if (job.commentExpandDoneSince == 0L) job.commentExpandDoneSince = now;
+                if (now - job.commentExpandDoneSince < 450L) {
+                    scheduleInspect(job, INSPECT_RETRY_MS);
+                    return;
+                }
+            }
+            web.evaluateJavascript("document.documentElement ? document.documentElement.outerHTML : ''", html -> {
+                if (job == current) finishCurrent(job, decode(html));
+            });
         });
     }
 

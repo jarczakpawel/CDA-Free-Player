@@ -57,7 +57,7 @@ class NativeWebViewSession:
             raise NativeWebViewUnavailable("Native WebView nie działa")
         self.conn.send(payload)
 
-    def fetch(self, url, cancel_event=None, expect_player=False):
+    def fetch(self, url, cancel_event=None, expect_player=False, expand_comments=False):
         with self.lock:
             started = time.monotonic()
             interactive_logged = False
@@ -65,7 +65,7 @@ class NativeWebViewSession:
                 raise SearchCancelled("Wyszukiwanie anulowane.")
             self._start()
             request_id = uuid.uuid4().hex
-            self._send({"cmd":"fetch","id":request_id,"url":url,"expect_player":expect_player})
+            self._send({"cmd":"fetch","id":request_id,"url":url,"expect_player":expect_player,"expand_comments":expand_comments})
             deadline = time.monotonic() + 185
             while True:
                 if time.monotonic() > deadline:

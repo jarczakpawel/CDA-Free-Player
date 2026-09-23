@@ -473,20 +473,31 @@ select{background:#151515;color:#fff;border:1px solid #555;border-radius:5px;pad
 .iconAction svg{width:22px;height:22px;fill:#fff}
 #contentOverlay{position:absolute;inset:0;z-index:20;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;padding:5vh 6vw;box-sizing:border-box;backdrop-filter:blur(4px)}
 #contentOverlay.show{display:flex}
-#contentCard{width:min(900px,92vw);max-height:82vh;background:rgba(20,23,28,.97);border:1px solid rgba(255,255,255,.15);border-radius:12px;box-shadow:0 18px 70px rgba(0,0,0,.55);display:flex;flex-direction:column;overflow:hidden}
+#contentCard{width:min(1120px,94vw);max-height:84vh;background:rgba(20,23,28,.97);border:1px solid rgba(255,255,255,.15);border-radius:12px;box-shadow:0 18px 70px rgba(0,0,0,.55);display:flex;flex-direction:column;overflow:hidden}
 #contentHeader{height:58px;display:flex;align-items:center;padding:0 16px 0 20px;border-bottom:1px solid rgba(255,255,255,.12);flex:0 0 auto}
 #contentTitle{font-size:20px;font-weight:700;flex:1}
 #contentClose{font-size:27px;width:42px;height:42px;border-radius:7px}
-#contentBody{overflow:auto;padding:22px 24px 26px;font-size:16px;line-height:1.55;white-space:normal}
+#contentBody{overflow:auto;padding:18px 20px 24px;font-size:16px;line-height:1.5;white-space:normal}
 .descriptionText{white-space:normal}
 .emptyText{color:#aaa;text-align:center;padding:36px 12px}
 .contentError{color:#ffb1b1;text-align:center;padding:30px 10px}
 .contentLoading{display:flex;align-items:center;justify-content:center;gap:13px;padding:38px 10px;color:#ddd}
 .smallSpinner{width:23px;height:23px;border:3px solid #555;border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
-.commentsList{display:flex;flex-direction:column;gap:12px}
-.comment{padding:14px 16px;border-radius:8px;background:#101216;border:1px solid rgba(255,255,255,.08)}
-.commentMeta{font-size:13px;color:#aaa;margin-bottom:6px}
-.commentText{white-space:normal;color:#eee}
+.commentsList{display:flex;flex-direction:column;gap:10px}
+.comment{display:grid;grid-template-columns:48px minmax(0,1fr);gap:12px;padding:12px 14px;border-radius:8px;background:#101216;border:1px solid rgba(255,255,255,.08)}
+.comment.reply{grid-template-columns:34px minmax(0,1fr);margin-left:56px;background:#171a20;border-left:3px solid rgba(85,170,255,.45)}
+.commentAvatarBox{width:48px;height:48px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.comment.reply .commentAvatarBox{width:34px;height:34px}
+.commentAvatar,.commentAvatarFallback{width:48px;height:48px;border-radius:5px;object-fit:cover;background:#242831;border:1px solid rgba(255,255,255,.12);box-sizing:border-box}
+.comment.reply .commentAvatar,.comment.reply .commentAvatarFallback{width:34px;height:34px}
+.commentAvatarFallback{display:flex;align-items:center;justify-content:center;color:#8b929e;font-weight:700;font-size:19px}
+.commentMain{min-width:0}
+.commentMeta{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 10px;font-size:13px;color:#aaa;margin-bottom:5px}
+.commentAuthor{color:#ff991e;font-weight:700;font-size:14px}
+.commentIp{font-family:monospace;color:#9ca3ad}
+.commentDate{margin-left:auto;color:#8f96a0}
+.commentScore{color:#ffd22e;font-weight:700}
+.commentText{white-space:normal;color:#eee;overflow-wrap:anywhere}
 .spacer{flex:1}
 </style>
 </head>
@@ -905,16 +916,20 @@ window.__CDAFP_CONFIG__=__CONFIG__;
             cached = self.db.comments(vid)
             if cached is not None:
                 return {"ok": True, "comments": cached, "rating": metadata.get("rating"), "cdaVotes": metadata.get("cda_votes")}
-        text, source = self.client.get_html(item["url"], True)
+        if kind == "comments":
+            text, source = self.client.get_comments_html(item["url"])
+            comments = parse_comments(text)
+        else:
+            text, source = self.client.get_html(item["url"], True)
+            comments = []
         fresh, _ = parse_metadata(text)
-        comments = parse_comments(text)
-        if fresh.get("comment_count") is None and comments:
+        if kind == "comments" and fresh.get("comment_count") is None:
             fresh["comment_count"] = len(comments)
         merged = self._merge_metadata(metadata, fresh)
         if not merged.get("description"):
             merged["description"] = str(item.get("short_description") or "").strip()
         self.db.save_metadata(vid, merged)
-        if comments or fresh.get("comment_count") is not None:
+        if kind == "comments":
             self.db.save_comments(vid, comments)
         log_event("player_content", id=vid, kind=kind, source=source, comments=len(comments))
         if kind == "description":

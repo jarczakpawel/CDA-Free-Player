@@ -1,5 +1,9 @@
 import re
 import tkinter as tk
+from io import BytesIO
+
+import httpx
+from PIL import Image, ImageOps, ImageTk
 
 from .config import (
     ACCENT,
@@ -31,6 +35,7 @@ class MovieInfoWindow:
         on_play,
         on_favorite,
         on_comments,
+        avatar_pool,
         on_close=None,
     ):
         self.item = item
@@ -39,6 +44,9 @@ class MovieInfoWindow:
         self.on_close = on_close
         self.action_index = 0
         self.body_mode = False
+        self.avatar_pool = avatar_pool
+        self.avatar_images = []
+        self.avatar_generation = 0
 
         self.win = tk.Toplevel(
             root
@@ -50,7 +58,7 @@ class MovieInfoWindow:
             )
         )
         self.win.geometry(
-            "920x680"
+            "1040x700"
         )
         self.win.minsize(
             720,
@@ -367,11 +375,19 @@ class MovieInfoWindow:
 
         self.body.tag_configure(
             "author",
-            foreground=TEXT,
+            foreground="#ff991e",
             font=(
                 "Sans",
                 11,
                 "bold",
+            ),
+        )
+        self.body.tag_configure(
+            "ip",
+            foreground=MUTED,
+            font=(
+                "Monospace",
+                9,
             ),
         )
         self.body.tag_configure(
@@ -398,8 +414,27 @@ class MovieInfoWindow:
                 "Sans",
                 11,
             ),
+            lmargin1=58,
+            lmargin2=58,
             spacing1=5,
-            spacing3=12,
+            spacing3=10,
+        )
+        self.body.tag_configure(
+            "reply_header",
+            lmargin1=54,
+            lmargin2=54,
+        )
+        self.body.tag_configure(
+            "reply_comment",
+            foreground=TEXT,
+            font=(
+                "Sans",
+                10,
+            ),
+            lmargin1=100,
+            lmargin2=100,
+            spacing1=4,
+            spacing3=8,
         )
         self.body.tag_configure(
             "separator",
@@ -493,6 +528,7 @@ class MovieInfoWindow:
         )
 
     def close(self):
+        self.avatar_generation += 1
         try:
             self.win.destroy()
         finally:
@@ -503,6 +539,8 @@ class MovieInfoWindow:
         self,
         text,
     ):
+        self.avatar_generation += 1
+        self.avatar_images.clear()
         self.body.configure(
             state="normal"
         )
@@ -621,6 +659,53 @@ class MovieInfoWindow:
             )
         )
 
+    def _load_avatar(self, url, image_name, size, generation):
+        def worker():
+            try:
+                response = httpx.get(
+                    url,
+                    timeout=6,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                response.raise_for_status()
+                if len(response.content) > 2 * 1024 * 1024:
+                    return
+                image = Image.open(BytesIO(response.content)).convert("RGB")
+                image = ImageOps.fit(
+                    image,
+                    (size, size),
+                    method=Image.Resampling.LANCZOS,
+                )
+                self.win.after(
+                    0,
+                    lambda: self._apply_avatar(
+                        image_name,
+                        image,
+                        generation,
+                    ),
+                )
+            except Exception:
+                pass
+
+        self.avatar_pool.submit(worker)
+
+    def _apply_avatar(self, image_name, image, generation):
+        if generation != self.avatar_generation or not self.win.winfo_exists():
+            return
+        try:
+            photo = ImageTk.PhotoImage(
+                image,
+                master=self.body,
+            )
+            self.avatar_images.append(photo)
+            self.body.image_configure(
+                image_name,
+                image=photo,
+            )
+        except Exception:
+            pass
+
     def set_comments(
         self,
         comments,
@@ -628,13 +713,14 @@ class MovieInfoWindow:
         self.set_comment_count(
             len(comments)
         )
-
         self.title.configure(
             text=self._comments_label(
                 len(comments)
             )
         )
-
+        self.avatar_generation += 1
+        generation = self.avatar_generation
+        self.avatar_images.clear()
         self.body.configure(
             state="normal"
         )
@@ -646,106 +732,69 @@ class MovieInfoWindow:
         if not comments:
             self.body.insert(
                 "end",
-                (
-                    "Brak komentarzy "
-                    "lub nie udało się ich pobrać."
-                ),
+                "Brak komentarzy lub nie udało się ich pobrać.",
                 "comment",
             )
         else:
-            for index, comment in enumerate(
-                comments
-            ):
+            for index, comment in enumerate(comments):
+                reply = bool(comment.get("reply"))
                 if index:
-                    self.body.insert(
-                        "end",
-                        (
-                            "\n"
-                            "────────────────────────"
-                            "\n\n"
-                        ),
-                        "separator",
-                    )
-
-                author = (
-                    comment.get(
-                        "author"
-                    )
-                    or "anonim"
-                )
-                date = (
-                    comment.get(
-                        "date"
-                    )
-                    or ""
-                )
-                rate = (
-                    comment.get(
-                        "rate"
-                    )
-                    or ""
-                )
-
-                self.body.insert(
-                    "end",
-                    author,
-                    "author",
-                )
-
-                if date:
-                    self.body.insert(
-                        "end",
-                        f"   {date}",
-                        "date",
-                    )
-
-                if rate:
-                    match = re.search(
-                        r"[-+]?\d+",
-                        rate,
-                    )
-
-                    score = (
-                        match.group(0)
-                        if match
-                        else rate
-                    )
-
-                    if (
-                        score
-                        and not score.startswith(
-                            ("+", "-")
+                    if reply:
+                        self.body.insert("end", "\n")
+                    else:
+                        self.body.insert(
+                            "end",
+                            "\n────────────────────────────────────────\n\n",
+                            "separator",
                         )
-                    ):
+                if reply:
+                    self.body.insert("end", " ", "reply_header")
+
+                size = 30 if reply else 42
+                placeholder = ImageTk.PhotoImage(
+                    Image.new("RGB", (size, size), PANEL),
+                    master=self.body,
+                )
+                self.avatar_images.append(placeholder)
+                image_name = self.body.image_create(
+                    "end",
+                    image=placeholder,
+                    padx=3,
+                    pady=2,
+                )
+                avatar = str(comment.get("avatar") or "").strip()
+                if avatar:
+                    self._load_avatar(
+                        avatar,
+                        image_name,
+                        size,
+                        generation,
+                    )
+
+                author = comment.get("author") or "anonim"
+                ip = comment.get("ip") or ""
+                date = comment.get("date") or ""
+                rate = comment.get("rate") or ""
+                self.body.insert("end", f"  {author}", "author")
+                if ip:
+                    self.body.insert("end", f"  {ip}", "ip")
+                if date:
+                    self.body.insert("end", f"   {date}", "date")
+                if rate:
+                    match = re.search(r"[-+]?\d+", rate)
+                    score = match.group(0) if match else rate
+                    if score and not score.startswith(("+", "-")):
                         try:
-                            number = int(
-                                score
-                            )
-                            score = (
-                                f"+{number}"
-                                if number > 0
-                                else str(number)
-                            )
+                            number = int(score)
+                            score = f"+{number}" if number > 0 else str(number)
                         except Exception:
                             pass
-
-                    self.body.insert(
-                        "end",
-                        f"   ★ {score}",
-                        "score",
-                    )
-
+                    self.body.insert("end", f"   ★ {score}", "score")
+                self.body.insert("end", "\n")
                 self.body.insert(
                     "end",
-                    "\n",
-                )
-                self.body.insert(
-                    "end",
-                    comment.get(
-                        "text",
-                        "",
-                    ),
-                    "comment",
+                    comment.get("text", ""),
+                    "reply_comment" if reply else "comment",
                 )
 
         self.body.configure(
