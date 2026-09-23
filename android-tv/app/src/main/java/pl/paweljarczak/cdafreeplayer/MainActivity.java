@@ -152,6 +152,10 @@ public final class MainActivity extends Activity {
                 if (collectionMode != null) removeCollection.requestFocus();
                 else filterButton.requestFocus();
             }
+            @Override public void onSectionUp(int targetPos) {
+                lastCard = targetPos;
+                focusCard(targetPos);
+            }
             @Override public void onLastRow(int p) { repo.loadNext(); }
         });
         adapter.setColumns(cols);
@@ -237,7 +241,7 @@ public final class MainActivity extends Activity {
         filterButton.setOnClickListener(v -> showFilterDialog());
         filterButton.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_UP) {
+            if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_LEFT) {
                 focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
                 return true;
             }
@@ -246,7 +250,7 @@ public final class MainActivity extends Activity {
                 else focusFirstCard();
                 return true;
             }
-            if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
             return false;
         });
     }
@@ -338,12 +342,19 @@ public final class MainActivity extends Activity {
     }
 
     private void focusFirstCard() {
-        int pos = adapter.firstMoviePosition();
+        focusCard(adapter.firstMoviePosition());
+    }
+
+    private void focusCard(int pos) {
         if (pos == RecyclerView.NO_POSITION) return;
         grid.scrollToPosition(pos);
         grid.post(() -> {
             RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
             if (vh != null) vh.itemView.requestFocus();
+            else grid.post(() -> {
+                RecyclerView.ViewHolder retry = grid.findViewHolderForAdapterPosition(pos);
+                if (retry != null) retry.itemView.requestFocus();
+            });
         });
     }
 
@@ -816,6 +827,7 @@ public final class MainActivity extends Activity {
                 m.title = MovieTitle.clean(m.title, m.duration);
                 i.putExtra("id", m.id); i.putExtra("title", m.title); i.putExtra("url", m.url);
                 i.putExtra("durationText", m.duration); i.putExtra("image", m.imageUrl);
+                i.putExtra("shortDescription", m.shortDescription == null ? "" : m.shortDescription);
                 i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
                 i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
                 i.putExtra("description", md.description);

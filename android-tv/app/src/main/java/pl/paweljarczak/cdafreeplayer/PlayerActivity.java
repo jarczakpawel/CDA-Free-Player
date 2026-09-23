@@ -127,6 +127,7 @@ public final class PlayerActivity extends Activity {
         Intent i = getIntent();
         movie.id = safe(i.getStringExtra("id")); movie.title = safe(i.getStringExtra("title")); movie.url = safe(i.getStringExtra("url"));
         movie.duration = safe(i.getStringExtra("durationText")); movie.title = MovieTitle.clean(movie.title, movie.duration); movie.imageUrl = safe(i.getStringExtra("image"));
+        movie.shortDescription = safe(i.getStringExtra("shortDescription"));
         dash = safe(i.getStringExtra("dash")); hls = safe(i.getStringExtra("hls")); direct = safe(i.getStringExtra("direct"));
         resolved = safe(i.getStringExtra("resolved")); resolvedKind = safe(i.getStringExtra("resolvedKind"));
         initialResume = Math.max(0, i.getLongExtra("resume", 0));

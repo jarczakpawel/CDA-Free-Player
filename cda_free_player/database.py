@@ -19,6 +19,7 @@ class Database:
                 url TEXT,
                 duration TEXT,
                 image TEXT,
+                short_description TEXT DEFAULT '',
                 added_at TEXT
             )
         """)
@@ -30,11 +31,24 @@ class Database:
                 url TEXT,
                 duration TEXT,
                 image TEXT,
+                short_description TEXT DEFAULT '',
                 position REAL DEFAULT 0,
                 media_duration REAL DEFAULT 0,
                 last_watched TEXT
             )
         """)
+
+        for table in ("favorites", "history_v6"):
+            columns = {
+                row[1]
+                for row in self.db.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            if "short_description" not in columns:
+                self.db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN short_description TEXT DEFAULT ''"
+                )
 
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS metadata_v6(
@@ -115,13 +129,15 @@ class Database:
                 return False
 
             self.db.execute(
-                "INSERT OR REPLACE INTO favorites VALUES(?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO favorites(id,title,url,duration,image,short_description,added_at) "
+                "VALUES(?,?,?,?,?,?,?)",
                 (
                     item["id"],
                     item["title"],
                     item["url"],
                     item["duration"],
                     item["image"],
+                    item.get("short_description", "") or "",
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
@@ -131,30 +147,30 @@ class Database:
     def favorites(self):
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,title,url,duration,image,added_at "
+                "SELECT id,title,url,duration,image,short_description,added_at "
                 "FROM favorites ORDER BY added_at DESC"
             ).fetchall()
 
         result = []
         for row in rows:
-            item = self._item(row[:5])
-            item["section_label"] = self._day_label(row[5])
+            item = self._item(row[:5], row[5])
+            item["section_label"] = self._day_label(row[6])
             result.append(item)
         return result
 
     def history(self):
         with self.lock:
             rows = self.db.execute(
-                "SELECT id,title,url,duration,image,position,media_duration,last_watched "
+                "SELECT id,title,url,duration,image,short_description,position,media_duration,last_watched "
                 "FROM history_v6 ORDER BY last_watched DESC LIMIT 100"
             ).fetchall()
 
         result = []
         for row in rows:
-            item = self._item(row[:5])
-            item["position"] = row[5] or 0
-            item["media_duration"] = row[6] or 0
-            item["section_label"] = self._day_label(row[7])
+            item = self._item(row[:5], row[5])
+            item["position"] = row[6] or 0
+            item["media_duration"] = row[7] or 0
+            item["section_label"] = self._day_label(row[8])
             result.append(item)
 
         return result
@@ -193,15 +209,16 @@ class Database:
             self.db.execute(
                 """
                 INSERT INTO history_v6(
-                    id,title,url,duration,image,
+                    id,title,url,duration,image,short_description,
                     position,media_duration,last_watched
                 )
-                VALUES(?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET
                     title=excluded.title,
                     url=excluded.url,
                     duration=excluded.duration,
                     image=excluded.image,
+                    short_description=excluded.short_description,
                     position=excluded.position,
                     media_duration=excluded.media_duration,
                     last_watched=excluded.last_watched
@@ -212,6 +229,7 @@ class Database:
                     item["url"],
                     item["duration"],
                     item["image"],
+                    item.get("short_description", "") or "",
                     float(position or 0),
                     float(media_duration or 0),
                     datetime.now().isoformat(timespec="seconds"),
@@ -401,13 +419,13 @@ class Database:
             self.db.execute("VACUUM")
 
     @staticmethod
-    def _item(row):
+    def _item(row, short_description=""):
         return {
             "id": row[0],
             "title": row[1],
             "url": row[2],
             "duration": row[3],
             "image": row[4],
-            "short_description": "",
+            "short_description": short_description or "",
             "short_rating": "",
         }

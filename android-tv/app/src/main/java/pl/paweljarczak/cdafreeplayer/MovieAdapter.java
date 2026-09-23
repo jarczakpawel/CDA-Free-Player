@@ -27,6 +27,7 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         void onClick(Movie m, int pos);
         void onLeftEdge(Movie m, int pos);
         void onTopRow(Movie m, int pos);
+        void onSectionUp(int targetPos);
         void onLastRow(int pos);
     }
 
@@ -200,9 +201,17 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             }
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             int sectionIndex = movieIndexInSection(p);
-            if (key == KeyEvent.KEYCODE_DPAD_UP && movieOrdinal(p) < columns) {
-                listener.onTopRow(m, p);
-                return true;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) {
+                if (sectioned && sectionIndex < columns) {
+                    int target = previousSectionTarget(p, sectionIndex);
+                    if (target != RecyclerView.NO_POSITION) listener.onSectionUp(target);
+                    else listener.onTopRow(m, p);
+                    return true;
+                }
+                if (!sectioned && p < columns) {
+                    listener.onTopRow(m, p);
+                    return true;
+                }
             }
             if (!sectioned && key == KeyEvent.KEYCODE_DPAD_DOWN && p / columns >= (getItemCount() - 1) / columns) listener.onLastRow(p);
             if (key == KeyEvent.KEYCODE_DPAD_LEFT && sectionIndex % columns == 0) {
@@ -223,11 +232,29 @@ public final class MovieAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return n;
     }
 
-    private int movieOrdinal(int position) {
-        if (!sectioned) return position;
-        int n = 0;
-        for (int i = 0; i < position; i++) if (rows.get(i) instanceof Movie) n++;
-        return n;
+    private int previousSectionTarget(int position, int column) {
+        if (!sectioned) return RecyclerView.NO_POSITION;
+        int currentHeader = RecyclerView.NO_POSITION;
+        for (int i = position - 1; i >= 0; i--) {
+            if (rows.get(i) instanceof String) { currentHeader = i; break; }
+        }
+        if (currentHeader <= 0) return RecyclerView.NO_POSITION;
+
+        int previousEnd = currentHeader - 1;
+        while (previousEnd >= 0 && !(rows.get(previousEnd) instanceof Movie)) previousEnd--;
+        if (previousEnd < 0) return RecyclerView.NO_POSITION;
+
+        int previousHeader = RecyclerView.NO_POSITION;
+        for (int i = previousEnd - 1; i >= 0; i--) {
+            if (rows.get(i) instanceof String) { previousHeader = i; break; }
+        }
+        int first = previousHeader == RecyclerView.NO_POSITION ? 0 : previousHeader + 1;
+        int count = previousEnd - first + 1;
+        if (count <= 0) return RecyclerView.NO_POSITION;
+        int lastRowSize = count % columns;
+        if (lastRowSize == 0) lastRowSize = columns;
+        int lastRowStart = previousEnd - lastRowSize + 1;
+        return lastRowStart + Math.min(Math.max(0, column), lastRowSize - 1);
     }
 
     @Override public int getItemCount() { return rows.size(); }

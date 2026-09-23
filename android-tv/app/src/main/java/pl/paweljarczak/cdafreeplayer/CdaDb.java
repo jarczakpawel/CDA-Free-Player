@@ -20,7 +20,7 @@ import java.util.Date;
 import java.util.Locale;
 
 public final class CdaDb extends SQLiteOpenHelper {
-    private static final int VER = 7;
+    private static final int VER = 8;
     private static final long CACHE_MS = 24L * 60 * 60 * 1000;
     private static final AtomicBoolean STARTUP_MAINTENANCE = new AtomicBoolean();
 
@@ -45,8 +45,8 @@ public final class CdaDb extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE favorites(id TEXT PRIMARY KEY,title TEXT,url TEXT,duration TEXT,image TEXT,added INTEGER)");
-        db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY,title TEXT,url TEXT,duration TEXT,image TEXT,position INTEGER,media_duration INTEGER,last INTEGER)");
+        db.execSQL("CREATE TABLE favorites(id TEXT PRIMARY KEY,title TEXT,url TEXT,duration TEXT,image TEXT,short_description TEXT,added INTEGER)");
+        db.execSQL("CREATE TABLE history(id TEXT PRIMARY KEY,title TEXT,url TEXT,duration TEXT,image TEXT,short_description TEXT,position INTEGER,media_duration INTEGER,last INTEGER)");
         db.execSQL("CREATE TABLE metadata(id TEXT PRIMARY KEY,description TEXT,rating REAL,cda_votes INTEGER,imdb_rating TEXT,imdb_votes INTEGER,comment_count INTEGER,updated INTEGER)");
         db.execSQL("CREATE TABLE comments(id TEXT PRIMARY KEY,json TEXT,updated INTEGER)");
         db.execSQL("CREATE TABLE search_cache(cache_key TEXT,page INTEGER,json TEXT,created INTEGER,PRIMARY KEY(cache_key,page))");
@@ -68,6 +68,10 @@ public final class CdaDb extends SQLiteOpenHelper {
             db.delete("search_cache", null, null);
             db.delete("metadata", null, null);
             db.delete("comments", null, null);
+        }
+        if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE favorites ADD COLUMN short_description TEXT");
+            db.execSQL("ALTER TABLE history ADD COLUMN short_description TEXT");
         }
     }
 
@@ -115,6 +119,7 @@ public final class CdaDb extends SQLiteOpenHelper {
         v.put("url", m.url);
         v.put("duration", m.duration);
         v.put("image", m.imageUrl);
+        v.put("short_description", m.shortDescription == null ? "" : m.shortDescription);
         return v;
     }
 
@@ -144,14 +149,14 @@ public final class CdaDb extends SQLiteOpenHelper {
     }
 
     public synchronized ArrayList<Movie> favorites() {
-        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,0,0,added FROM favorites ORDER BY added DESC", true);
+        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,short_description,0,0,added FROM favorites ORDER BY added DESC", true);
         decorateLocalState(out);
         for (Movie m : out) m.favorite = true;
         return out;
     }
 
     public synchronized ArrayList<Movie> recent() {
-        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,position,media_duration,last FROM history ORDER BY last DESC LIMIT 100", true);
+        ArrayList<Movie> out = readMovies("SELECT id,title,url,duration,image,short_description,position,media_duration,last FROM history ORDER BY last DESC LIMIT 100", true);
         decorateLocalState(out);
         return out;
     }
@@ -167,9 +172,10 @@ public final class CdaDb extends SQLiteOpenHelper {
                 m.duration = c.getString(3);
                 m.title = MovieTitle.clean(m.title, m.duration);
                 m.imageUrl = c.getString(4);
-                m.positionMs = c.getLong(5);
-                m.mediaDurationMs = c.getLong(6);
-                if (sectionByDay && c.getColumnCount() > 7) m.sectionLabel = dayLabel(c.getLong(7));
+                m.shortDescription = c.getString(5) == null ? "" : c.getString(5);
+                m.positionMs = c.getLong(6);
+                m.mediaDurationMs = c.getLong(7);
+                if (sectionByDay && c.getColumnCount() > 8) m.sectionLabel = dayLabel(c.getLong(8));
                 out.add(m);
             }
         }
