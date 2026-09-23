@@ -1,5 +1,6 @@
 package pl.paweljarczak.cdafreeplayer;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -16,6 +17,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -30,38 +32,46 @@ public final class TvDialogs {
     private static final int MUTED = Color.rgb(165, 171, 182);
     private TvDialogs() {}
 
-    private static int step(KeyEvent event, ScrollView sc) {
-        int viewport = Math.max(240, sc.getHeight());
-        int repeat = event.getRepeatCount();
-        if (repeat < 3) return Math.max(160, viewport / 5);
-        if (repeat < 8) return Math.max(260, viewport / 3);
-        return Math.max(420, viewport / 2);
-    }
-
     private static void installTvScroll(Dialog dialog, ScrollView sc) {
         sc.setFocusable(true);
         sc.setFocusableInTouchMode(true);
-        dialog.setOnShowListener(x -> sc.requestFocus());
+        final int[] target = {0};
+        final ValueAnimator[] animator = {null};
+        dialog.setOnShowListener(x -> {
+            target[0] = sc.getScrollY();
+            sc.requestFocus();
+        });
         dialog.setOnKeyListener((x, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            int amount = step(event, sc);
+            int direction;
+            int viewport = Math.max(240, sc.getHeight());
+            int amount;
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
-                sc.smoothScrollBy(0, amount);
-                return true;
+                direction = 1;
+                amount = Math.max(120, viewport / 7);
+            } else if (key == KeyEvent.KEYCODE_DPAD_UP) {
+                direction = -1;
+                amount = Math.max(120, viewport / 7);
+            } else if (key == KeyEvent.KEYCODE_PAGE_DOWN) {
+                direction = 1;
+                amount = Math.max(300, viewport - 80);
+            } else if (key == KeyEvent.KEYCODE_PAGE_UP) {
+                direction = -1;
+                amount = Math.max(300, viewport - 80);
+            } else {
+                return false;
             }
-            if (key == KeyEvent.KEYCODE_DPAD_UP) {
-                sc.smoothScrollBy(0, -amount);
-                return true;
-            }
-            if (key == KeyEvent.KEYCODE_PAGE_DOWN) {
-                sc.smoothScrollBy(0, Math.max(300, sc.getHeight() - 80));
-                return true;
-            }
-            if (key == KeyEvent.KEYCODE_PAGE_UP) {
-                sc.smoothScrollBy(0, -Math.max(300, sc.getHeight() - 80));
-                return true;
-            }
-            return false;
+            View child = sc.getChildAt(0);
+            int max = child == null ? 0 : Math.max(0, child.getHeight() - sc.getHeight());
+            target[0] = Math.max(0, Math.min(max, target[0] + direction * amount));
+            int start = sc.getScrollY();
+            if (animator[0] != null) animator[0].cancel();
+            animator[0] = ValueAnimator.ofInt(start, target[0]);
+            animator[0].setDuration(key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_UP ? 170 : 220);
+            animator[0].setInterpolator(new DecelerateInterpolator());
+            animator[0].addUpdateListener(a -> sc.scrollTo(0, (Integer) a.getAnimatedValue()));
+            animator[0].start();
+            return true;
         });
     }
 
@@ -110,7 +120,7 @@ public final class TvDialogs {
         sc.setFillViewport(true);
         LinearLayout rows = new LinearLayout(activity);
         rows.setOrientation(LinearLayout.VERTICAL);
-        rows.setPadding(8 * d, 8 * d, 8 * d, 14 * d);
+        rows.setPadding(8 * d, 6 * d, 8 * d, 10 * d);
         sc.addView(rows, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         ImageLoader images = new ImageLoader(activity);
 
@@ -127,17 +137,17 @@ public final class TvDialogs {
                 LinearLayout card = new LinearLayout(activity);
                 card.setOrientation(LinearLayout.HORIZONTAL);
                 card.setGravity(Gravity.TOP);
-                card.setPadding(10 * d, 9 * d, 12 * d, 10 * d);
+                card.setPadding(10 * d, 6 * d, 12 * d, 7 * d);
                 GradientDrawable bg = new GradientDrawable();
                 bg.setColor(Color.parseColor(c.reply ? "#171A20" : "#101216"));
                 bg.setCornerRadius(7 * d);
                 bg.setStroke(c.reply ? 2 * d : d, Color.parseColor(c.reply ? "#365E84" : "#343A44"));
                 card.setBackground(bg);
                 LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                cardLp.setMargins(c.reply ? 58 * d : 4 * d, 5 * d, 4 * d, 5 * d);
+                cardLp.setMargins(c.reply ? 58 * d : 4 * d, 3 * d, 4 * d, 3 * d);
                 rows.addView(card, cardLp);
 
-                int avatarSize = (c.reply ? 34 : 48) * d;
+                int avatarSize = (c.reply ? 32 : 44) * d;
                 ImageView avatar = new ImageView(activity);
                 avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 GradientDrawable avatarBg = new GradientDrawable();
@@ -190,8 +200,8 @@ public final class TvDialogs {
                 body.setText(c.text == null ? "" : c.text);
                 body.setTextColor(Color.rgb(238, 238, 238));
                 body.setTextSize(c.reply ? 15 : 16);
-                body.setLineSpacing(0, 1.08f);
-                body.setPadding(0, 4 * d, 0, 0);
+                body.setLineSpacing(0, 1.05f);
+                body.setPadding(0, 2 * d, 0, 0);
                 content.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             }
         }

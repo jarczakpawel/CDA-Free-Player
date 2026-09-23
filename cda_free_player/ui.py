@@ -2968,10 +2968,11 @@ class App:
                 panel.set_metadata(cached_full)
                 panel.set_description(cached_full.get("description"))
             else:
-                panel.set_description_loading()
+                cancel_event = threading.Event()
+                panel.set_description_loading(cancel_event)
                 threading.Thread(
                     target=self.description_worker,
-                    args=(item.copy(), panel),
+                    args=(item.copy(), panel, cancel_event),
                     daemon=True,
                 ).start()
 
@@ -3014,10 +3015,14 @@ class App:
         self.status.configure(text="Dodano do ulubionych." if state else "Usunięto z ulubionych.")
         return state
 
-    def description_worker(self, item, panel):
+    def description_worker(self, item, panel, cancel_event):
         try:
-            text, source = self.client.get_html(item["url"], True)
+            text, source = self.client.get_html(item["url"], True, cancel_event)
+            if cancel_event.is_set():
+                return
             data, _ = parse_metadata(text)
+            if cancel_event.is_set():
+                return
             self.events.put((
                 "panel_description",
                 item["id"],
@@ -3032,13 +3037,16 @@ class App:
                 source=source,
                 description_len=len(data.get("description") or ""),
             )
+        except SearchCancelled:
+            return
         except Exception as exc:
-            self.events.put((
-                "panel_description_error",
-                item["id"],
-                panel,
-                f"Nie udało się pobrać pełnego opisu: {exc}",
-            ))
+            if not cancel_event.is_set():
+                self.events.put((
+                    "panel_description_error",
+                    item["id"],
+                    panel,
+                    f"Nie udało się pobrać pełnego opisu: {exc}",
+                ))
 
     def load_comments_for_panel(self, item, panel):
         cached = self.comments_memory.get(item["id"])
@@ -3060,20 +3068,26 @@ class App:
                 self.detail_comments_btn.configure(image=self.detail_icons["comments"], text="")
 
             return
+        cancel_event = threading.Event()
+        panel.start_loading("Wczytywanie komentarzy…", cancel_event)
         threading.Thread(
             target=self.comments_worker,
-            args=(item.copy(), panel),
+            args=(item.copy(), panel, cancel_event),
             daemon=True,
         ).start()
 
-    def comments_worker(self, item, panel):
+    def comments_worker(self, item, panel, cancel_event):
         try:
-            text, source = self.client.get_comments_html(item["url"])
+            text, source = self.client.get_comments_html(item["url"], cancel_event)
+            if cancel_event.is_set():
+                return
             if not text:
                 self.events.put(("comments_error", item["id"], panel, "Komentarze wymagają aktywnej sesji CDA."))
                 return
             comments = parse_comments(text)
             data, _ = parse_metadata(text)
+            if cancel_event.is_set():
+                return
             self.events.put((
                 "comments",
                 item["id"],
@@ -3082,8 +3096,11 @@ class App:
                 data,
             ))
             log_event("comments", id=item["id"], source=source, count=len(comments))
+        except SearchCancelled:
+            return
         except Exception as exc:
-            self.events.put(("comments_error", item["id"], panel, f"Nie udało się pobrać komentarzy: {exc}"))
+            if not cancel_event.is_set():
+                self.events.put(("comments_error", item["id"], panel, f"Nie udało się pobrać komentarzy: {exc}"))
 
     def open_settings(self):
         SettingsWindow(

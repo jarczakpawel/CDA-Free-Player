@@ -62,12 +62,12 @@ public final class MainActivity extends Activity {
     private View yearFilterBar;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
-    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailRating, detailDescriptionPreview, voiceStatus;
+    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailRating, detailDescriptionPreview, voiceStatus, contentLoadingText;
     private ImageView detailThumb;
     private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
     private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection;
     private EditText manualQuery;
-    private View loadingBar;
+    private View loadingBar, contentLoadingOverlay;
     private FrameLayout securityOverlay, voiceOverlay;
     private String sort = "best", duration = "all", query = "lektor 1985";
     private Integer selectedYear = 1985;
@@ -75,6 +75,9 @@ public final class MainActivity extends Activity {
     private Movie focused;
     private boolean launchedPlayer = false;
     private boolean playerPreparing = false;
+    private boolean contentLoading = false;
+    private RequestToken contentToken;
+    private View contentReturnFocus;
     private boolean removeMode = false;
     private String collectionMode = null;
     private UpdateManager updater;
@@ -123,6 +126,7 @@ public final class MainActivity extends Activity {
         manualQuery = findViewById(R.id.manualQuery); manualSearch = findViewById(R.id.manualSearch); voiceSearch = findViewById(R.id.voiceSearch);
         settingsButton = findViewById(R.id.settingsButton); removeCollection = findViewById(R.id.removeCollection);
         securityOverlay = findViewById(R.id.securityOverlay); voiceOverlay = findViewById(R.id.voiceOverlay); voiceStatus = findViewById(R.id.voiceStatus);
+        contentLoadingOverlay = findViewById(R.id.contentLoadingOverlay); contentLoadingText = findViewById(R.id.contentLoadingText);
     }
 
     private void setupGrid() {
@@ -745,6 +749,7 @@ public final class MainActivity extends Activity {
     }
 
     private void loadDescription() {
+        if (contentLoading) return;
         Movie m = focused;
         if (m == null) return;
         MovieMetadata cached = repo.sessionMetadata(m.id);
@@ -752,8 +757,8 @@ public final class MainActivity extends Activity {
             TvDialogs.text(this, "Opis", cached.description, cached);
             return;
         }
-        setStatus("Wczytywanie pełnego opisu…");
-        repo.loadMetadata(m, true, new CdaRepository.MetadataListener() {
+        beginContentLoad("Wczytywanie opisu…", detailDescription);
+        contentToken = repo.loadMetadata(m, true, new CdaRepository.MetadataListener() {
             @Override public void onMetadata(MovieMetadata md) {
                 String d = md == null || md.description == null || md.description.isEmpty()
                         ? (m.shortDescription == null ? "" : m.shortDescription)
@@ -764,10 +769,12 @@ public final class MainActivity extends Activity {
                     if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
                     if (focused == m) showMovie(m);
                 }
+                endContentLoad();
                 setStatus("Gotowe");
                 TvDialogs.text(MainActivity.this, "Opis", d, md);
             }
             @Override public void onError(String e) {
+                endContentLoad();
                 setStatus("Błąd: " + e);
                 Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
             }
@@ -775,9 +782,9 @@ public final class MainActivity extends Activity {
     }
 
     private void loadComments() {
-        if (focused == null) return;
-        setStatus("Wczytywanie komentarzy…");
-        repo.loadComments(focused, new CdaRepository.CommentsListener() {
+        if (contentLoading || focused == null) return;
+        beginContentLoad("Wczytywanie komentarzy…", detailComments);
+        contentToken = repo.loadComments(focused, new CdaRepository.CommentsListener() {
             @Override public void onComments(ArrayList<CommentItem> comments, MovieMetadata md) {
                 if (md != null) {
                     if (md.rating != null) focused.rating = md.rating;
@@ -785,14 +792,46 @@ public final class MainActivity extends Activity {
                 }
                 if (focused != null) showMovie(focused);
                 updateDetailCommentsDescription(comments.size());
+                endContentLoad();
                 TvDialogs.comments(MainActivity.this, comments, md);
                 setStatus("Gotowe");
             }
             @Override public void onError(String e) {
+                endContentLoad();
                 setStatus(e);
                 Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    private void beginContentLoad(String text, View returnFocus) {
+        if (contentLoading) return;
+        contentLoading = true;
+        contentReturnFocus = returnFocus;
+        contentLoadingText.setText(text);
+        contentLoadingOverlay.setVisibility(View.VISIBLE);
+        contentLoadingOverlay.requestFocus();
+    }
+
+    private void endContentLoad() {
+        contentToken = null;
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        if (focus != null) focus.requestFocus();
+    }
+
+    private void cancelContentLoad() {
+        RequestToken token = contentToken;
+        contentToken = null;
+        if (token != null) repo.cancel(token);
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        if (focus != null) focus.requestFocus();
+        setStatus("Wczytywanie przerwane");
     }
 
     private void updateDetailFavoriteIcon() {
@@ -938,6 +977,7 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (contentLoading) { cancelContentLoad(); return; }
         if (voiceListening || voiceOverlay.getVisibility() == View.VISIBLE) { cancelVoiceSearch(); return; }
         if (playerPreparing) {
             repo.cancelPlayer(); playerPreparing = false; setStatus("Przygotowanie filmu przerwane"); return;

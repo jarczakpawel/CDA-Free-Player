@@ -47,6 +47,8 @@ class MovieInfoWindow:
         self.avatar_pool = avatar_pool
         self.avatar_images = []
         self.avatar_generation = 0
+        self.load_cancel_event = None
+        self.loading = False
 
         self.win = tk.Toplevel(
             root
@@ -89,11 +91,11 @@ class MovieInfoWindow:
         )
         self.win.bind(
             "<Escape>",
-            lambda e: self.close(),
+            self.back,
         )
         self.win.bind(
             "<BackSpace>",
-            lambda e: self.close(),
+            self.back,
         )
         self.win.bind(
             "<Left>",
@@ -373,6 +375,24 @@ class MovieInfoWindow:
             yscrollcommand=scroll.set,
         )
 
+        self.loading_overlay = tk.Frame(
+            self.win,
+            bg=PANEL2,
+            takefocus=True,
+        )
+        self.loading_text = tk.Label(
+            self.loading_overlay,
+            text="",
+            bg=PANEL2,
+            fg=TEXT,
+            font=("Sans", 14, "bold"),
+        )
+        self.loading_text.place(
+            relx=0.5,
+            rely=0.5,
+            anchor="center",
+        )
+
         self.body.tag_configure(
             "author",
             foreground="#ff991e",
@@ -416,8 +436,8 @@ class MovieInfoWindow:
             ),
             lmargin1=58,
             lmargin2=58,
-            spacing1=5,
-            spacing3=10,
+            spacing1=2,
+            spacing3=5,
         )
         self.body.tag_configure(
             "reply_header",
@@ -433,8 +453,8 @@ class MovieInfoWindow:
             ),
             lmargin1=100,
             lmargin2=100,
-            spacing1=4,
-            spacing3=8,
+            spacing1=2,
+            spacing3=4,
         )
         self.body.tag_configure(
             "separator",
@@ -527,8 +547,51 @@ class MovieInfoWindow:
             )
         )
 
+    def start_loading(self, text, cancel_event):
+        if self.load_cancel_event is not None:
+            self.load_cancel_event.set()
+        self.load_cancel_event = cancel_event
+        self.loading = True
+        self.loading_text.configure(text=text)
+        self.loading_overlay.place(
+            x=0,
+            y=0,
+            relwidth=1,
+            relheight=1,
+        )
+        self.loading_overlay.lift()
+        self.loading_overlay.focus_set()
+
+    def stop_loading(self):
+        self.load_cancel_event = None
+        self.loading = False
+        self.loading_overlay.place_forget()
+        self.body_mode = False
+        self._focus_action(self.action_index)
+
+    def cancel_loading(self):
+        cancel_event = self.load_cancel_event
+        self.load_cancel_event = None
+        if cancel_event is not None:
+            cancel_event.set()
+        self.loading = False
+        self.loading_overlay.place_forget()
+        self.show_description()
+        self.body_mode = False
+        self._focus_action(self.action_index)
+
+    def back(self, event=None):
+        if self.loading:
+            self.cancel_loading()
+            return "break"
+        self.close()
+        return "break"
+
     def close(self):
         self.avatar_generation += 1
+        if self.load_cancel_event is not None:
+            self.load_cancel_event.set()
+            self.load_cancel_event = None
         try:
             self.win.destroy()
         finally:
@@ -612,16 +675,18 @@ class MovieInfoWindow:
             description
         )
 
-    def set_description_loading(self):
+    def set_description_loading(self, cancel_event):
         self.body_mode = True
         self.title.configure(text="Pełny opis")
-        self._set_body("Wczytywanie pełnego opisu…")
+        self.start_loading("Wczytywanie opisu…", cancel_event)
 
     def set_description(self, text):
+        self.stop_loading()
         self.metadata["description"] = text or self.item.get("short_description", "")
         self.show_description()
 
     def set_description_error(self, error):
+        self.stop_loading()
         self.body_mode = True
         self.title.configure(text="Pełny opis")
         fallback = self.item.get("short_description", "")
@@ -637,9 +702,6 @@ class MovieInfoWindow:
             text=self._comments_label(
                 count
             )
-        )
-        self._set_body(
-            "Wczytywanie komentarzy…"
         )
         self.on_comments(
             self
@@ -710,6 +772,7 @@ class MovieInfoWindow:
         self,
         comments,
     ):
+        self.stop_loading()
         self.set_comment_count(
             len(comments)
         )
@@ -744,13 +807,13 @@ class MovieInfoWindow:
                     else:
                         self.body.insert(
                             "end",
-                            "\n────────────────────────────────────────\n\n",
+                            "\n────────────────────────────────────────\n",
                             "separator",
                         )
                 if reply:
                     self.body.insert("end", " ", "reply_header")
 
-                size = 30 if reply else 42
+                size = 28 if reply else 36
                 placeholder = ImageTk.PhotoImage(
                     Image.new("RGB", (size, size), PANEL),
                     master=self.body,
@@ -808,6 +871,7 @@ class MovieInfoWindow:
         self,
         text,
     ):
+        self.stop_loading()
         self.title.configure(
             text="Komentarze"
         )
