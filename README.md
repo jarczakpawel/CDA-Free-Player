@@ -18,7 +18,13 @@ Najważniejsze funkcje:
 - obsługa pilotem / D-padem
 - automatyczne sprawdzanie aktualizacji
 
+## Demo
+
+![Demo aplikacji](assets/demo.gif)
+
 ## Uruchomienie
+
+W wersjach desktopowych do odtwarzania DASH wymagana jest jedna z przeglądarek: Google Chrome, Microsoft Edge, Brave lub Chromium. Android TV / TV Box tego nie wymaga.
 
 ### Android TV / TV Box
 Zainstaluj plik APK. Wymagany jest Android 9 lub nowszy.
