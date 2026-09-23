@@ -1,4 +1,5 @@
 import platform
+import sys
 from pathlib import Path
 
 from .version import VERSION
@@ -16,7 +17,6 @@ def _test_tk():
             raise RuntimeError("Pillow/Tk image creation failed")
     finally:
         root.destroy()
-
 
 
 def _test_dash_launcher_contract():
@@ -65,6 +65,7 @@ def _test_dash_launcher_contract():
     if not linux or "google-chrome" not in linux[0]:
         raise RuntimeError("Linux DASH browser preference must start with Google Chrome")
 
+
 def _test_webview_challenge_contract():
     source = (Path(__file__).with_name("webview_worker.py")).read_text(encoding="utf-8")
     if "_pywebviewready" in source or "bridge_ready.wait" in source:
@@ -81,7 +82,8 @@ def _test_webview_challenge_contract():
         raise RuntimeError("macOS verification must stay behind the main app")
     if "setActivationPolicy_(1)" not in source:
         raise RuntimeError("macOS verification helper must run as an accessory app")
-    if "activateIgnoringOtherApps_" in source[source.index("def show_verification"):source.index("def fetch(req)")]:
+    part = source[source.index("def show_verification"):source.index("def fetch(req)")]
+    if "activateIgnoringOtherApps_" in part:
         raise RuntimeError("Verification must never activate the app on macOS")
     if "native.present" not in source:
         raise RuntimeError("Linux GTK verification behavior must remain intact")
@@ -89,10 +91,19 @@ def _test_webview_challenge_contract():
 
 def _test_desktop_ui_contract():
     source = (Path(__file__).with_name("ui.py")).read_text(encoding="utf-8")
-    if 'text=APP_NAME' in source[source.index("def build_left_nav"):source.index("def show_left_nav")]:
+    part = source[source.index("def build_left_nav"):source.index("def show_left_nav")]
+    if 'text=APP_NAME' in part:
         raise RuntimeError("Desktop sidebar must show only the CDA logo")
     if '"Zamknąć aplikację?"' in source or '"Czy na pewno chcesz zamknąć CDA Free Player?"' in source:
         raise RuntimeError("Desktop app must close without a confirmation dialog")
+
+
+def run_contracts():
+    _test_dash_launcher_contract()
+    _test_webview_challenge_contract()
+    _test_desktop_ui_contract()
+    print("CDA Free Player source contracts OK")
+    return 0
 
 
 def run():
@@ -103,9 +114,8 @@ def run():
     import PIL._imagingtk
 
     system = platform.system().lower()
-    _test_dash_launcher_contract()
-    _test_webview_challenge_contract()
-    _test_desktop_ui_contract()
+    if not getattr(sys, "frozen", False):
+        run_contracts()
 
     if system == "darwin":
         _test_tk()
@@ -123,8 +133,6 @@ def run():
         gi.require_version("Gtk", "3.0")
         gi.require_version("WebKit2", "4.1")
         from gi.repository import Gtk, WebKit2
-        import webview
-        import webview.platforms.gtk
     else:
         raise RuntimeError(f"Unsupported desktop OS: {system}")
 
@@ -148,4 +156,6 @@ def run():
 
 
 if __name__ == "__main__":
+    if "--contracts" in sys.argv:
+        raise SystemExit(run_contracts())
     raise SystemExit(run())

@@ -28,10 +28,17 @@ if __name__ == "__main__":
     except Exception:
         error = traceback.format_exc()
         (LOG_DIR / "desktop-startup-error.log").write_text(error, encoding="utf-8")
-        if "--self-test" not in sys.argv:
-            try:
-                from tkinter import messagebox
-                messagebox.showerror("CDA Free Player", "Błąd uruchamiania. Log: " + str(LOG_DIR / "desktop-startup-error.log"))
-            except Exception:
-                pass
+        if "--self-test" in sys.argv:
+            if sys.stderr is not None:
+                try:
+                    sys.stderr.write(error)
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+            raise SystemExit(1)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("CDA Free Player", "Błąd uruchamiania. Log: " + str(LOG_DIR / "desktop-startup-error.log"))
+        except Exception:
+            pass
         raise

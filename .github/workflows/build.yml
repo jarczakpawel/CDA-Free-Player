@@ -2,10 +2,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -176,7 +173,12 @@ jobs:
           if (-not (Test-Path $exe)) { throw "Missing $exe" }
           $dash = @(Get-ChildItem 'dist\CDA Free Player' -Recurse -Filter 'dash.all.min.js')
           if ($dash.Count -ne 1) { throw "Bundled DASH engine missing or ambiguous: $($dash.Count)" }
-          $check = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList '--self-test' -PassThru -Wait
+          $check = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList '--self-test' -PassThru
+          if (-not $check.WaitForExit(60000)) {
+            Stop-Process -Id $check.Id -Force -ErrorAction SilentlyContinue
+            Get-Content "$env:LOCALAPPDATA\CDA Free Player\logs\desktop-startup-error.log" -ErrorAction SilentlyContinue
+            throw "Windows packaged self-test timed out after 60 seconds"
+          }
           if ($check.ExitCode -ne 0) {
             Get-Content "$env:LOCALAPPDATA\CDA Free Player\logs\desktop-startup-error.log" -ErrorAction SilentlyContinue
             throw "Windows packaged self-test failed: $($check.ExitCode)"
@@ -197,7 +199,14 @@ jobs:
           BIN="$APP/Contents/MacOS/CDA Free Player"
           test -x "$BIN"
           test "$(find "$APP" -type f -name 'dash.all.min.js' | wc -l | tr -d ' ')" -eq 1
-          "$BIN" --self-test
+          python - "$BIN" <<'PY'
+          import subprocess, sys
+          try:
+              result = subprocess.run([sys.argv[1], "--self-test"], timeout=60)
+          except subprocess.TimeoutExpired:
+              raise SystemExit("macOS packaged self-test timed out after 60 seconds")
+          raise SystemExit(result.returncode)
+          PY
           mkdir -p release_out
           ZIP="release_out/CDA-Free-Player-macOS-${{ matrix.arch }}-v${VERSION}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"

@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed: $LASTEXITCODE" }
+python -m cda_free_player.selftest --contracts
+if ($LASTEXITCODE -ne 0) { throw "Source contract self-test failed: $LASTEXITCODE" }
 python -m PyInstaller --noconfirm --clean --windowed --name "CDA Free Player" `
   --icon "assets\cda-free-player.ico" `
   --add-data "assets;assets" `

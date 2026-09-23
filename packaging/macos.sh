@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+python -m cda_free_player.selftest --contracts
 iconutil -c icns "assets/macos/cda-free-player.iconset" -o "assets/macos/cda-free-player.icns"
 pyinstaller --noconfirm --clean --windowed --name "CDA Free Player" \
   --icon "assets/macos/cda-free-player.icns" \
