@@ -55,7 +55,9 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q cda_free_player desktop_entry.py scripts
       - name: Validate player JavaScript
-        run: node --check assets/web/player_capture.js
+        run: |
+          node --check assets/web/player_capture.js
+          node --check assets/desktop/player.js
       - name: Validate XML
         run: |
           python - <<'PY'
@@ -157,6 +159,8 @@ jobs:
           grep -qxF 'cda-free-player/bootstrap-linux.sh' <<<"$LISTING"
           grep -qxF 'cda-free-player/run.sh' <<<"$LISTING"
           grep -qxF 'cda-free-player/requirements-linux.txt' <<<"$LISTING"
+          grep -qxF 'cda-free-player/assets/desktop/dash.all.min.js' <<<"$LISTING"
+          grep -qxF 'cda-free-player/assets/desktop/dash.js-LICENSE.txt' <<<"$LISTING"
           SIZE="$(stat -c %s "$ARCHIVE")"
           echo "Linux source/runtime package size: $SIZE bytes"
           test "$SIZE" -lt 20000000
@@ -170,6 +174,8 @@ jobs:
           ./packaging/windows.ps1
           $exe = 'dist\CDA Free Player\CDA Free Player.exe'
           if (-not (Test-Path $exe)) { throw "Missing $exe" }
+          $dash = @(Get-ChildItem 'dist\CDA Free Player' -Recurse -Filter 'dash.all.min.js')
+          if ($dash.Count -ne 1) { throw "Bundled DASH engine missing or ambiguous: $($dash.Count)" }
           $check = Start-Process -FilePath (Resolve-Path $exe).Path -ArgumentList '--self-test' -PassThru -Wait
           if ($check.ExitCode -ne 0) {
             Get-Content "$env:LOCALAPPDATA\CDA Free Player\logs\desktop-startup-error.log" -ErrorAction SilentlyContinue
@@ -190,6 +196,7 @@ jobs:
           APP="dist/CDA Free Player.app"
           BIN="$APP/Contents/MacOS/CDA Free Player"
           test -x "$BIN"
+          test "$(find "$APP" -type f -name 'dash.all.min.js' | wc -l | tr -d ' ')" -eq 1
           "$BIN" --self-test
           mkdir -p release_out
           ZIP="release_out/CDA-Free-Player-macOS-${{ matrix.arch }}-v${VERSION}.zip"

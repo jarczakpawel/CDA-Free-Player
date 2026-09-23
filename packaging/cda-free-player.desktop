@@ -5,3 +5,4 @@ Exec=cda-free-player
 Icon=cda-free-player
 Categories=AudioVideo;Video;
 Terminal=false
+StartupWMClass=CDA-Free-Player

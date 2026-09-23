@@ -16,6 +16,16 @@ else
   exit 2
 fi
 
+if ! command -v google-chrome-stable >/dev/null 2>&1 && \
+   ! command -v google-chrome >/dev/null 2>&1 && \
+   ! command -v microsoft-edge-stable >/dev/null 2>&1 && \
+   ! command -v microsoft-edge >/dev/null 2>&1 && \
+   ! command -v brave-browser >/dev/null 2>&1 && \
+   ! command -v chromium >/dev/null 2>&1 && \
+   ! command -v chromium-browser >/dev/null 2>&1; then
+  echo "Uwaga: odtwarzanie DASH wymaga Chrome, Edge, Brave albo Chromium." >&2
+fi
+
 rm -rf .venv
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate

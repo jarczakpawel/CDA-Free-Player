@@ -119,6 +119,7 @@ class App:
         self.root._cda_card_positions = self.card_positions
         self.card_rating_views = {}
         self.card_footer_frames = {}
+        self.card_progress_bars = {}
         self.photos = {}
         self.comments_memory = {}
         self.metadata_memory = {}
@@ -191,12 +192,18 @@ class App:
                 ),
             )
             self.root.after(
+                900,
+                lambda: threading.Thread(
+                    target=self.player.prewarm_dash,
+                    daemon=True,
+                ).start(),
+            )
+            self.root.after(
                 520,
                 lambda: self.center_year_in_bar(
                     self.selected_year
                 ),
             )
-
     def build_detail_icons(self):
         def photo(kind, filled=False):
             import math
@@ -595,8 +602,7 @@ class App:
         brand.pack(fill="x", padx=14, pady=(14, 16))
         if self.app_icon is not None:
             self.brand_icon = self.app_icon.subsample(max(1, self.app_icon.width() // 52))
-            tk.Label(brand, image=self.brand_icon, bg=PANEL).pack(side="left", padx=(0,10))
-        tk.Label(brand, text=APP_NAME, bg=PANEL, fg=TEXT, font=("Sans", 23, "bold")).pack(side="left")
+            tk.Label(brand, image=self.brand_icon, bg=PANEL).pack(side="left")
 
         browse = self.tv_button(
             self.nav_panel,
@@ -1446,12 +1452,7 @@ class App:
         return 0
 
     def confirm_close(self):
-        if messagebox.askyesno(
-            "Zamknąć aplikację?",
-            "Czy na pewno chcesz zamknąć CDA Free Player?",
-            parent=self.root,
-        ):
-            self.close(force=True)
+        self.close(force=True)
 
 
     def paint_focus(
@@ -2089,6 +2090,7 @@ class App:
         self.card_frames.clear()
         self.card_positions.clear()
         self.card_footer_frames.clear()
+        self.card_progress_bars.clear()
         self.photos.clear()
 
         for child in self.grid_frame.winfo_children():
@@ -2641,27 +2643,76 @@ class App:
         favorite = "  ♥" if self.db.is_favorite(item["id"]) else ""
         return f"{item['title']}{favorite}"
 
-    def add_progress_bar(self, card, item):
-        position = float(item.get("position") or 0)
-        total = float(item.get("media_duration") or 0)
-        if not position or not total:
-            position, total = self.db.history_position(item["id"])
-            position = float(position or 0)
-            total = float(total or 0)
-        if position <= 5 or total <= 0:
-            return
-        pct = max(0.0, min(1.0, position / total))
-        bar = tk.Canvas(card, width=1, height=4, bg="#3c434e", highlightthickness=0, bd=0)
-        bar.pack(fill="x", padx=7, pady=(0, 4))
-
-        def redraw(event=None):
+    def draw_progress_bar(self, bar):
+        try:
             width = max(1, bar.winfo_width())
+            pct = max(0.0, min(1.0, float(getattr(bar, "_cda_pct", 0.0))))
             bar.delete("all")
             bar.create_rectangle(0, 0, width, 4, fill="#3c434e", outline="")
             bar.create_rectangle(0, 0, int(width * pct), 4, fill=ACCENT, outline="")
+        except tk.TclError:
+            pass
 
-        bar.bind("<Configure>", redraw)
-        bar.after_idle(redraw)
+    def add_progress_bar(self, card, item):
+        vid = item["id"]
+        position = float(item.get("position") or 0)
+        total = float(item.get("media_duration") or 0)
+        if not position or not total:
+            position, total = self.db.history_position(vid)
+            position = float(position or 0)
+            total = float(total or 0)
+
+        bar = self.card_progress_bars.get(vid)
+        try:
+            valid_bar = bar is not None and bool(bar.winfo_exists())
+        except tk.TclError:
+            valid_bar = False
+        if not valid_bar:
+            bar = None
+            self.card_progress_bars.pop(vid, None)
+
+        if position <= 5 or total <= 0:
+            if bar is not None:
+                try:
+                    bar.destroy()
+                except tk.TclError:
+                    pass
+                self.card_progress_bars.pop(vid, None)
+            return
+
+        pct = max(0.0, min(1.0, position / total))
+        if bar is None:
+            bar = tk.Canvas(card, width=1, height=4, bg="#3c434e", highlightthickness=0, bd=0)
+            bar.pack(fill="x", padx=7, pady=(0, 4))
+            bar.bind("<Configure>", lambda event, target=bar: self.draw_progress_bar(target))
+            self.card_progress_bars[vid] = bar
+
+        bar._cda_pct = pct
+        bar.after_idle(lambda target=bar: self.draw_progress_bar(target))
+
+    def refresh_item_progress(self, vid):
+        item = self.items_by_id.get(vid)
+        if item is None:
+            return
+
+        position, total = self.db.history_position(vid)
+        item["position"] = float(position or 0)
+        item["media_duration"] = float(total or 0)
+
+        if self.browse_state is not None:
+            for saved in self.browse_state.get("items", []):
+                if saved.get("id") == vid:
+                    saved["position"] = item["position"]
+                    saved["media_duration"] = item["media_duration"]
+                    break
+
+        try:
+            index = self.items.index(item)
+            card = self.card_frames[index]
+        except (ValueError, IndexError):
+            return
+
+        self.add_progress_bar(card, item)
 
 
     def load_thumb(
@@ -3315,7 +3366,9 @@ class App:
         ).start()
 
     def play_worker(self, item, cancel_event):
+        play_started = False
         try:
+            threading.Thread(target=self.player.prewarm_dash, daemon=True).start()
             page_html, source = self.client.get_html(
                 item["url"],
                 True,
@@ -3337,6 +3390,9 @@ class App:
                 pdata,
                 cancel_event,
             )
+            play_started = True
+            if kind != "dash":
+                self.player.cancel_prewarm()
 
             self.events.put((
                 "status",
@@ -3370,12 +3426,11 @@ class App:
             ))
 
         finally:
+            if not play_started:
+                self.player.cancel_prewarm()
             self.events.put(("play_prepared", cancel_event))
 
     def close(self, force=False):
-        if not force:
-            self.confirm_close()
-            return
         self.closed = True
         self.search_cancel.set()
         self.play_cancel.set()
@@ -3606,8 +3661,8 @@ class App:
                         )
                     elif state == "native_interactive":
                         self.set_left_status(
-                            "CDA wymaga potwierdzenia",
-                            "Weryfikacja jest w oknie CDA Free Player",
+                            "Weryfikacja zabezpieczeń CDA…",
+                            "Weryfikacja trwa w tle",
                             loading=True,
                         )
                     elif state == "required":
@@ -3686,8 +3741,11 @@ class App:
                         self.play_preparing = False
 
                 elif kind == "play_end":
+                    vid = event[1]
                     if self.view_mode == "recent":
                         self.show_recent()
+                    else:
+                        self.refresh_item_progress(vid)
                     self.show_left_nav()
                     self.controller.focus("left", self.section_left_index())
                     try:

@@ -24,10 +24,10 @@ Najważniejsze funkcje:
 Zainstaluj plik APK. Wymagany jest Android 9 lub nowszy.
 
 ### Windows
-Rozpakuj całą paczkę ZIP i uruchom `CDA Free Player.exe`. Niczego dodatkowego nie trzeba instalować - mpv jest dołączone do paczki.
+Rozpakuj całą paczkę ZIP i uruchom `CDA Free Player.exe`. mpv jest dołączone do paczki; odtwarzanie DASH korzysta z systemowego Microsoft Edge lub zainstalowanego Chrome/Brave jako lekkiego silnika multimedialnego w trybie aplikacji.
 
 ### macOS
-Rozpakuj aplikację i przed pierwszym uruchomieniem zainstaluj mpv:
+Rozpakuj aplikację. Do DASH wymagany jest Google Chrome, Microsoft Edge albo Brave. Dla pozostałych źródeł zainstaluj mpv:
 
 ```bash
 brew install mpv
@@ -46,7 +46,7 @@ Następnie uruchamiaj program przez:
 ./run.sh
 ```
 
-Na innych dystrybucjach trzeba ręcznie zainstalować Python 3 z venv i Tk, PyGObject/GTK3, WebKitGTK 4.1 oraz mpv, a następnie zależności z `requirements-linux.txt`.
+Na innych dystrybucjach trzeba ręcznie zainstalować Python 3 z venv i Tk, PyGObject/GTK3, WebKitGTK 4.1 oraz mpv, a następnie zależności z `requirements-linux.txt`. Do DASH potrzebny jest Chrome, Edge, Brave albo Chromium.
 
 Program jest bardzo lekki i został zrobiony głównie z myślą o wygodnym oglądaniu CDA na telewizorze. Dla mnie jest po prostu znacznie przyjemniejszy w użyciu niż oryginalny odtwarzacz ;)
 
