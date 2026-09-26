@@ -2,8 +2,11 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.UiModeManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -68,13 +71,13 @@ public final class PlayerActivity extends Activity {
     private SeekBar seek;
     private StarRatingView stars;
     private ImageButton favorite, description, comments;
-    private Button quality;
+    private Button quality, playPause;
     private CdaRepository repo;
     private CdaDb db;
     private final Movie movie = new Movie();
     private final MovieMetadata metadata = new MovieMetadata();
     private String dash = "", hls = "", direct = "", resolved = "", resolvedKind = "";
-    private boolean osdVisible = false, scrubbing = false;
+    private boolean osdVisible = false, scrubbing = false, touchUi = false;
     private long initialResume = 0, lastPeriodicSave = 0;
     private int sourceIndex = 0;
     private Runnable tick, hideOsd, hideHint;
@@ -87,6 +90,7 @@ public final class PlayerActivity extends Activity {
         super.onCreate(state);
         setContentView(R.layout.activity_player);
         bind();
+        touchUi = !isTelevision() && getResources().getConfiguration().touchscreen != Configuration.TOUCHSCREEN_NOTOUCH;
         readIntent();
         repo = new CdaRepository(this, (FrameLayout) securityOverlay, findViewById(R.id.securityHost));
         repo.setPlaybackContext(true);
@@ -119,6 +123,7 @@ public final class PlayerActivity extends Activity {
         remaining = findViewById(R.id.remainingTime); duration = findViewById(R.id.durationTime); title = findViewById(R.id.playerTitle);
         stars = findViewById(R.id.playerStars); ratingExact = findViewById(R.id.playerRatingExact); favorite = findViewById(R.id.playerFavorite);
         description = findViewById(R.id.playerDescription); comments = findViewById(R.id.playerComments); quality = findViewById(R.id.playerQuality);
+        playPause = findViewById(R.id.playerPlayPause);
         contentLoadingOverlay = findViewById(R.id.contentLoadingOverlay); contentLoadingText = findViewById(R.id.contentLoadingText);
         securityOverlay = findViewById(R.id.securityOverlay);
     }
@@ -176,6 +181,12 @@ public final class PlayerActivity extends Activity {
         playerView.setKeepContentOnPlayerReset(true);
         playerView.setKeepScreenOn(false);
         playerView.setPlayer(player);
+        playerView.setClickable(touchUi);
+        if (touchUi) {
+            playerView.setOnClickListener(v -> {
+                if (osdVisible) hideOsd(); else showOsd();
+            });
+        }
         playerView.requestFocus();
 
         player.addListener(new Player.Listener() {
@@ -197,10 +208,12 @@ public final class PlayerActivity extends Activity {
             @Override public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY || state == Player.STATE_ENDED) readyToSave = true;
                 if (state == Player.STATE_ENDED) saveProgress();
+                updatePlayPauseLabel();
                 playerView.setKeepScreenOn(player != null && player.getPlayWhenReady() &&
                         (state == Player.STATE_BUFFERING || state == Player.STATE_READY));
             }
             @Override public void onPlayWhenReadyChanged(boolean play, int reason) {
+                updatePlayPauseLabel();
                 playerView.setKeepScreenOn(play && player != null && !fatalError &&
                         (player.getPlaybackState() == Player.STATE_READY || player.getPlaybackState() == Player.STATE_BUFFERING));
             }
@@ -251,6 +264,12 @@ public final class PlayerActivity extends Activity {
 
     private void setupOsd() {
         title.setText(movie.title);
+        playPause.setVisibility(touchUi ? View.VISIBLE : View.GONE);
+        playPause.setOnClickListener(v -> {
+            togglePlayback();
+            resetHide();
+        });
+        updatePlayPauseLabel();
         movie.favorite = db.isFavorite(movie.id);
         updateFavoriteIcon();
         favorite.setOnClickListener(v -> {
@@ -284,7 +303,7 @@ public final class PlayerActivity extends Activity {
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) { favorite.requestFocus(); return true; }
             return false;
         });
-        for (View v : new View[]{favorite, description, comments, quality}) {
+        for (View v : new View[]{playPause, favorite, description, comments, quality}) {
             v.setOnKeyListener((x, key, e) -> {
                 if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (key == KeyEvent.KEYCODE_DPAD_UP) { seek.requestFocus(); return true; }
@@ -335,9 +354,48 @@ public final class PlayerActivity extends Activity {
         ratingTop.setVisibility(osdVisible ? View.VISIBLE : View.GONE);
     }
 
-    private void showOsd() { osdVisible = true; osd.setVisibility(View.VISIBLE); updateRatingDisplay(); seek.requestFocus(); resetHide(); }
-    private void hideOsd() { osdVisible = false; osd.setVisibility(View.GONE); ratingTop.setVisibility(View.GONE); playerView.requestFocus(); }
-    private void resetHide() { h.removeCallbacks(hideOsd); h.postDelayed(hideOsd, 7000); }
+    private void showOsd() {
+        osdVisible = true;
+        osd.setVisibility(View.VISIBLE);
+        updateRatingDisplay();
+        updatePlayPauseLabel();
+        if (!touchUi) seek.requestFocus();
+        resetHide();
+    }
+
+    private void hideOsd() {
+        osdVisible = false;
+        osd.setVisibility(View.GONE);
+        ratingTop.setVisibility(View.GONE);
+        if (!touchUi) playerView.requestFocus();
+    }
+
+    private void resetHide() {
+        h.removeCallbacks(hideOsd);
+        h.postDelayed(hideOsd, touchUi ? 5000 : 7000);
+    }
+
+    private void togglePlayback() {
+        if (player == null) return;
+        if (player.getPlayWhenReady()) player.pause();
+        else {
+            if (player.getPlaybackState() == Player.STATE_ENDED) player.seekTo(0);
+            player.play();
+        }
+        updatePlayPauseLabel();
+    }
+
+    private void updatePlayPauseLabel() {
+        if (playPause == null || player == null) return;
+        boolean playing = player.getPlayWhenReady() && player.getPlaybackState() != Player.STATE_ENDED;
+        playPause.setText(playing ? "Pauza" : "Odtwórz");
+    }
+
+    private boolean isTelevision() {
+        UiModeManager manager = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        return (manager != null && manager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+    }
     private long stepForRepeat(int r) { return r < 3 ? 10_000L : r < 7 ? 30_000L : 60_000L; }
 
     private void seekBy(long delta) {

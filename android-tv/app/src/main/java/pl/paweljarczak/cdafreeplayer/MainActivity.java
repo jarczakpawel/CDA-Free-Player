@@ -2,11 +2,13 @@ package pl.paweljarczak.cdafreeplayer;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.UiModeManager;
 import android.Manifest;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
@@ -58,22 +60,26 @@ public final class MainActivity extends Activity {
     private ImageLoader images;
     private MovieAdapter adapter;
     private GridLayoutManager gridLayout;
-    private LinearLayout navPanel, detailPanel, yearRow;
-    private View yearFilterBar;
+    private LinearLayout navPanel, detailPanel, yearRow, contentContainer;
+    private FrameLayout sideContainer;
+    private View yearFilterBar, mobileTopBar, drawerScrim;
     private HorizontalScrollView yearScroll;
     private RecyclerView grid;
     private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailRating, detailDescriptionPreview, voiceStatus, contentLoadingText;
     private ImageView detailThumb;
     private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
-    private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection;
+    private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection, mobileMenuButton;
     private EditText manualQuery;
     private View loadingBar, contentLoadingOverlay;
     private FrameLayout securityOverlay, voiceOverlay;
     private String sort = "best", duration = "all", query = "lektor 1985";
     private Integer selectedYear = 1985;
-    private int initialPages = 0, lastCard = 0;
+    private int initialPages = 0, lastCard = 0, gridColumns = 3;
     private Movie focused;
     private boolean launchedPlayer = false;
+    private boolean touchUi = false;
+    private boolean compactNavigation = false;
+    private boolean drawerOpen = false;
     private boolean playerPreparing = false;
     private boolean contentLoading = false;
     private RequestToken contentToken;
@@ -102,18 +108,22 @@ public final class MainActivity extends Activity {
             setStatus(interactive ? "Weryfikacja zabezpieczeń CDA" :
                     background ? "Weryfikacja sesji w tle…" : "Weryfikacja w tle…");
         });
+        touchUi = !isTelevision() && getResources().getConfiguration().touchscreen != Configuration.TOUCHSCREEN_NOTOUCH;
         setupGrid();
         setupYears();
         setupFilters();
         setupLeft();
-        setImeAccess(false);
+        setupResponsiveUi();
+        setImeAccess(touchUi);
         startSearch(query, "Lektor 1985");
-        yearRow.postDelayed(() -> focusYear(DEFAULT_YEAR, true), 250);
+        if (!touchUi) yearRow.postDelayed(() -> focusYear(DEFAULT_YEAR, true), 250);
         h.postDelayed(updater::checkOnStartup, 2200);
     }
 
     private void bind() {
         navPanel = findViewById(R.id.navPanel); detailPanel = findViewById(R.id.detailPanel);
+        contentContainer = findViewById(R.id.contentContainer); sideContainer = findViewById(R.id.sideContainer);
+        mobileTopBar = findViewById(R.id.mobileTopBar); mobileMenuButton = findViewById(R.id.mobileMenuButton); drawerScrim = findViewById(R.id.drawerScrim);
         yearRow = findViewById(R.id.yearRow); yearFilterBar = findViewById(R.id.yearFilterBar); filterButton = findViewById(R.id.filterButton);
         yearScroll = findViewById(R.id.yearScroll); grid = findViewById(R.id.grid); status = findViewById(R.id.status);
         resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
@@ -130,15 +140,15 @@ public final class MainActivity extends Activity {
     }
 
     private void setupGrid() {
-        int cols = getResources().getDisplayMetrics().widthPixels >= 1500 ? 4 : 3;
-        gridLayout = new GridLayoutManager(this, cols);
+        gridColumns = calculateGridColumns();
+        gridLayout = new GridLayoutManager(this, gridColumns);
         grid.setLayoutManager(gridLayout);
         grid.setHasFixedSize(true);
         grid.setItemAnimator(null);
         grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        grid.setItemViewCacheSize(cols * 5);
+        grid.setItemViewCacheSize(gridColumns * 5);
         gridLayout.setItemPrefetchEnabled(true);
-        grid.getRecycledViewPool().setMaxRecycledViews(0, cols * 8);
+        grid.getRecycledViewPool().setMaxRecycledViews(0, gridColumns * 8);
         grid.getRecycledViewPool().setMaxRecycledViews(1, 8);
         adapter = new MovieAdapter(images, new MovieAdapter.Listener() {
             @Override public void onFocus(Movie m, int p, View v) {
@@ -162,14 +172,14 @@ public final class MainActivity extends Activity {
             }
             @Override public void onLastRow(int p) { repo.loadNext(); }
         });
-        adapter.setColumns(cols);
+        adapter.setColumns(gridColumns);
         gridLayout.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
-            @Override public int getSpanSize(int position) { return adapter.isHeader(position) ? cols : 1; }
+            @Override public int getSpanSize(int position) { return adapter.isHeader(position) ? gridColumns : 1; }
         });
         grid.setAdapter(adapter);
         grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override public void onScrolled(RecyclerView view, int dx, int dy) {
-                if (dy > 0 && collectionMode == null && gridLayout.findLastVisibleItemPosition() >= adapter.getItemCount() - cols) repo.loadNext();
+                if (dy > 0 && collectionMode == null && gridLayout.findLastVisibleItemPosition() >= adapter.getItemCount() - gridColumns) repo.loadNext();
             }
         });
     }
@@ -231,10 +241,14 @@ public final class MainActivity extends Activity {
             b.setOnKeyListener((v, key, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    restoreGridFocus();
+                    return true;
+                }
+                if (key == KeyEvent.KEYCODE_DPAD_RIGHT && year == max) {
                     filterButton.requestFocus();
                     return true;
                 }
-                return key == KeyEvent.KEYCODE_DPAD_RIGHT && year == max;
+                return false;
             });
             yearRow.addView(b);
         }
@@ -251,7 +265,7 @@ public final class MainActivity extends Activity {
             }
             if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
                 if (removeCollection.getVisibility() == View.VISIBLE) removeCollection.requestFocus();
-                else focusFirstCard();
+                else restoreGridFocus();
                 return true;
             }
             if (key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
@@ -362,11 +376,20 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void restoreGridFocus() {
+        int count = adapter == null ? 0 : adapter.getItemCount();
+        if (count <= 0) return;
+        int pos = Math.max(0, Math.min(lastCard, count - 1));
+        if (adapter.isHeader(pos)) pos = adapter.firstMoviePosition();
+        if (pos == RecyclerView.NO_POSITION) return;
+        focusCard(pos);
+    }
+
     private void setupLeft() {
-        browse.setOnClickListener(v -> showBrowse(true));
-        recent.setOnClickListener(v -> showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"));
-        favorites.setOnClickListener(v -> showCollection(repo.db().favorites(), "Ulubione", "favorites"));
-        manualSearch.setOnClickListener(v -> manualSearch());
+        browse.setOnClickListener(v -> { showBrowse(!touchUi); closeDrawerIfCompact(); });
+        recent.setOnClickListener(v -> { showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"); closeDrawerIfCompact(); });
+        favorites.setOnClickListener(v -> { showCollection(repo.db().favorites(), "Ulubione", "favorites"); closeDrawerIfCompact(); });
+        manualSearch.setOnClickListener(v -> { manualSearch(); closeDrawerIfCompact(); });
         voiceSearch.setOnClickListener(v -> startVoiceSearch());
         settingsButton.setOnClickListener(v -> SettingsDialog.show(this, repo.db(), updater, this::refreshCurrentCollection, () -> {
             repo.db().clearCache();
@@ -378,9 +401,9 @@ public final class MainActivity extends Activity {
             images.clearCache();
         }));
         removeCollection.setOnClickListener(v -> toggleRemoveMode());
-        manualQuery.setShowSoftInputOnFocus(false);
+        manualQuery.setShowSoftInputOnFocus(touchUi);
         manualQuery.setOnFocusChangeListener((v, hasFocus) -> {
-            if (!hasFocus) {
+            if (!hasFocus && !touchUi) {
                 manualQuery.setShowSoftInputOnFocus(false);
                 setImeAccess(false);
             }
@@ -393,7 +416,7 @@ public final class MainActivity extends Activity {
             if (imm != null) h.post(() -> imm.showSoftInput(manualQuery, InputMethodManager.SHOW_IMPLICIT));
         });
         manualQuery.setOnEditorActionListener((v, action, event) -> {
-            if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); return true; }
+            if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); closeDrawerIfCompact(); return true; }
             return false;
         });
         manualQuery.setOnKeyListener((v, key, event) -> {
@@ -415,16 +438,17 @@ public final class MainActivity extends Activity {
         }
         manualSearch.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_DOWN || key == KeyEvent.KEYCODE_DPAD_RIGHT) { voiceSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { voiceSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { browse.requestFocus(); return true; }
             return false;
         });
         voiceSearch.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_UP) { manualSearch.requestFocus(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { settingsButton.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { manualQuery.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { browse.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT) { manualSearch.requestFocus(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                if (adapter.getMovieCount() > 0) focusFirstCard();
+                if (adapter.getMovieCount() > 0) restoreGridFocus();
                 else if (collectionMode != null) removeCollection.requestFocus();
                 else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
                 return true;
@@ -434,7 +458,7 @@ public final class MainActivity extends Activity {
         removeCollection.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (key == KeyEvent.KEYCODE_DPAD_UP) { focusSectionButton(); return true; }
-            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { focusFirstCard(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { restoreGridFocus(); return true; }
             return key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT;
         });
         detailFavorite.setOnClickListener(v -> {
@@ -570,6 +594,7 @@ public final class MainActivity extends Activity {
             manualQuery.setSelection(spoken.length());
             selectedYear = null;
             startSearch(spoken, "Wyniki: " + spoken);
+            closeDrawerIfCompact();
             return;
         }
         voiceSearch.requestFocus();
@@ -662,14 +687,7 @@ public final class MainActivity extends Activity {
     }
 
     private void restoreBrowseCard() {
-        int pos = adapter.isHeader(lastCard) ? adapter.firstMoviePosition() : lastCard;
-        if (pos == RecyclerView.NO_POSITION) return;
-        grid.scrollToPosition(pos);
-        grid.post(() -> {
-            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
-            if (vh != null) vh.itemView.requestFocus();
-            else focusFirstCard();
-        });
+        restoreGridFocus();
     }
 
     private Button sectionButton() {
@@ -678,7 +696,11 @@ public final class MainActivity extends Activity {
         return browse;
     }
 
-    private void focusSectionButton() { showNav(); sectionButton().requestFocus(); }
+    private void focusSectionButton() {
+        showNav();
+        if (compactNavigation) openDrawer(true);
+        sectionButton().requestFocus();
+    }
 
     private void toggleRemoveMode() {
         if (collectionMode == null) return;
@@ -894,7 +916,11 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void focusDetailActions() { showDetail(); detailFavorite.requestFocus(); }
+    private void focusDetailActions() {
+        showDetail();
+        if (compactNavigation) openDrawer(false);
+        detailFavorite.requestFocus();
+    }
 
     private void restoreCard() {
         showDetail();
@@ -926,6 +952,117 @@ public final class MainActivity extends Activity {
         int l = v.getLeft(), rr = v.getRight(), vl = yearScroll.getScrollX(), vr = vl + yearScroll.getWidth(), margin = 12;
         if (l < vl + margin) yearScroll.smoothScrollTo(Math.max(0, l - margin), 0);
         else if (rr > vr - margin) yearScroll.smoothScrollTo(rr - yearScroll.getWidth() + margin, 0);
+    }
+
+    private boolean isTelevision() {
+        UiModeManager manager = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        return (manager != null && manager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+    }
+
+    private int calculateGridColumns() {
+        Configuration c = getResources().getConfiguration();
+        int width = c.screenWidthDp > 0 ? c.screenWidthDp : (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
+        boolean tv = isTelevision();
+        boolean tablet = c.smallestScreenWidthDp >= 600;
+        int available = width - ((tv || (tablet && width >= 900)) ? 292 : 20);
+        if (tv) return available >= 1200 ? 4 : 3;
+        if (available >= 900) return 5;
+        if (available >= 680) return 4;
+        if (available >= 480) return 3;
+        return 2;
+    }
+
+    private void setupResponsiveUi() {
+        mobileMenuButton.setOnClickListener(v -> openDrawer(true));
+        drawerScrim.setOnClickListener(v -> closeDrawer());
+        applyResponsiveLayout();
+    }
+
+    private void applyResponsiveLayout() {
+        Configuration c = getResources().getConfiguration();
+        boolean tablet = c.smallestScreenWidthDp >= 600;
+        boolean permanent = isTelevision() || (tablet && c.screenWidthDp >= 900);
+        compactNavigation = !permanent;
+
+        int widthPx = getResources().getDisplayMetrics().widthPixels;
+        int sideWidth = permanent ? dp(292) : Math.min(dp(320), Math.max(dp(260), widthPx - dp(32)));
+        FrameLayout.LayoutParams sideLp = (FrameLayout.LayoutParams) sideContainer.getLayoutParams();
+        sideLp.width = sideWidth;
+        sideContainer.setLayoutParams(sideLp);
+
+        FrameLayout.LayoutParams contentLp = (FrameLayout.LayoutParams) contentContainer.getLayoutParams();
+        contentLp.leftMargin = permanent ? sideWidth : 0;
+        contentContainer.setLayoutParams(contentLp);
+        mobileTopBar.setVisibility(compactNavigation ? View.VISIBLE : View.GONE);
+
+        if (permanent) {
+            drawerOpen = false;
+            drawerScrim.animate().cancel();
+            drawerScrim.setVisibility(View.GONE);
+            drawerScrim.setAlpha(0f);
+            sideContainer.animate().cancel();
+            sideContainer.setTranslationX(0f);
+            sideContainer.setVisibility(View.VISIBLE);
+        } else if (!drawerOpen) {
+            drawerScrim.setVisibility(View.GONE);
+            sideContainer.setVisibility(View.GONE);
+        }
+        updateGridColumns();
+    }
+
+    private void updateGridColumns() {
+        int cols = calculateGridColumns();
+        if (cols == gridColumns) return;
+        gridColumns = cols;
+        if (gridLayout != null) gridLayout.setSpanCount(cols);
+        if (adapter != null) adapter.setColumns(cols);
+        if (grid != null) {
+            grid.setItemViewCacheSize(cols * 5);
+            grid.getRecycledViewPool().setMaxRecycledViews(0, cols * 8);
+        }
+    }
+
+    private void openDrawer(boolean nav) {
+        if (!compactNavigation) return;
+        if (nav) showNav();
+        drawerOpen = true;
+        drawerScrim.animate().cancel();
+        sideContainer.animate().cancel();
+        drawerScrim.setAlpha(0f);
+        drawerScrim.setVisibility(View.VISIBLE);
+        sideContainer.setVisibility(View.VISIBLE);
+        sideContainer.post(() -> {
+            sideContainer.setTranslationX(-sideContainer.getWidth());
+            sideContainer.animate().translationX(0f).setDuration(180).start();
+            drawerScrim.animate().alpha(1f).setDuration(180).start();
+        });
+    }
+
+    private void closeDrawerIfCompact() {
+        if (compactNavigation) closeDrawer();
+    }
+
+    private void closeDrawer() {
+        if (!compactNavigation || !drawerOpen) return;
+        drawerOpen = false;
+        drawerScrim.animate().cancel();
+        sideContainer.animate().cancel();
+        drawerScrim.animate().alpha(0f).setDuration(150).start();
+        sideContainer.animate().translationX(-sideContainer.getWidth()).setDuration(150).withEndAction(() -> {
+            if (!drawerOpen && compactNavigation) {
+                sideContainer.setVisibility(View.GONE);
+                sideContainer.setTranslationX(0f);
+                drawerScrim.setVisibility(View.GONE);
+            }
+        }).start();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        touchUi = !isTelevision() && newConfig.touchscreen != Configuration.TOUCHSCREEN_NOTOUCH;
+        applyResponsiveLayout();
     }
 
     private void clearAppCacheFiles() {
@@ -977,6 +1114,7 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (compactNavigation && drawerOpen) { closeDrawer(); return; }
         if (contentLoading) { cancelContentLoad(); return; }
         if (voiceListening || voiceOverlay.getVisibility() == View.VISIBLE) { cancelVoiceSearch(); return; }
         if (playerPreparing) {
