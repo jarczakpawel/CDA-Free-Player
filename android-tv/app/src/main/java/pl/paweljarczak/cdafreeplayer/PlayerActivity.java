@@ -8,6 +8,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.net.Uri;
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -40,6 +42,7 @@ import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
 
@@ -80,8 +83,10 @@ public final class PlayerActivity extends Activity {
     private boolean osdVisible = false, scrubbing = false, touchUi = false;
     private long initialResume = 0, lastPeriodicSave = 0;
     private int sourceIndex = 0;
-    private Runnable tick, hideOsd, hideHint;
+    private Runnable tick, hideOsd, hideHint, compatibilityWatchdog;
     private boolean resumePlaying = true, readyToSave, fatalError, contentLoading, resumeAfterVerification;
+    private boolean firstVideoFrame, compatibilityLowBitrate;
+    private int sourceGeneration;
     private RequestToken contentToken;
     private View contentReturnFocus;
 
@@ -106,6 +111,7 @@ public final class PlayerActivity extends Activity {
             }
         });
         db = repo.db();
+        logAvcDecoders();
         setupPlayer();
         setupOsd();
         buildSources();
@@ -167,14 +173,18 @@ public final class PlayerActivity extends Activity {
         DefaultRenderersFactory renderers = new DefaultRenderersFactory(this);
         renderers.setEnableDecoderFallback(true);
 
+        DefaultTrackSelector trackSelector = new DefaultTrackSelector(this);
+        trackSelector.setParameters(trackSelector.buildUponParameters()
+                .setExceedRendererCapabilitiesIfNecessary(true)
+                .setForceHighestSupportedBitrate(true));
+
         player = new ExoPlayer.Builder(this, renderers)
+                .setTrackSelector(trackSelector)
                 .setLoadControl(load)
                 .setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
                 .setHandleAudioBecomingNoisy(true)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(data))
                 .build();
-        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                .setForceHighestSupportedBitrate(true).build());
 
         playerView.setUseController(false);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
@@ -193,12 +203,8 @@ public final class PlayerActivity extends Activity {
             @Override public void onPlayerError(PlaybackException error) {
                 if (player == null) return;
                 saveProgress();
-                Log.w("CDAFP", "Media3 error=" + error.getErrorCodeName() + "; source=" + sourceIndex);
-                long position = readyToSave ? Math.max(0, player.getCurrentPosition()) : initialResume;
-                if (sourceIndex + 1 < sources.size()) {
-                    sourceIndex++;
-                    prepareSource(sourceIndex, position);
-                } else {
+                Log.w("CDAFP", "Media3 error=" + error.getErrorCodeName() + "; source=" + sourceIndex + "; kind=" + currentSourceKind());
+                if (!tryNextSource("player-error:" + error.getErrorCodeName())) {
                     fatalError = true;
                     playerView.setKeepScreenOn(false);
                     Toast.makeText(PlayerActivity.this,
@@ -206,7 +212,10 @@ public final class PlayerActivity extends Activity {
                 }
             }
             @Override public void onPlaybackStateChanged(int state) {
+                Log.d("CDAFP", "state=" + state + "; source=" + sourceIndex + "; kind=" + currentSourceKind() +
+                        "; pos=" + (player == null ? -1 : player.getCurrentPosition()));
                 if (state == Player.STATE_READY || state == Player.STATE_ENDED) readyToSave = true;
+                if (state == Player.STATE_READY) scheduleCompatibilityWatchdog();
                 if (state == Player.STATE_ENDED) saveProgress();
                 updatePlayPauseLabel();
                 playerView.setKeepScreenOn(player != null && player.getPlayWhenReady() &&
@@ -214,10 +223,21 @@ public final class PlayerActivity extends Activity {
             }
             @Override public void onPlayWhenReadyChanged(boolean play, int reason) {
                 updatePlayPauseLabel();
+                if (play) scheduleCompatibilityWatchdog();
                 playerView.setKeepScreenOn(play && player != null && !fatalError &&
                         (player.getPlaybackState() == Player.STATE_READY || player.getPlaybackState() == Player.STATE_BUFFERING));
             }
-            @Override public void onTracksChanged(Tracks tracks) { updateQualityLabel(); }
+            @Override public void onRenderedFirstFrame() {
+                firstVideoFrame = true;
+                Log.i("CDAFP", "first-video-frame source=" + sourceIndex + "; kind=" + currentSourceKind() +
+                        "; pos=" + (player == null ? -1 : player.getCurrentPosition()));
+            }
+            @Override public void onTracksChanged(Tracks tracks) {
+                logTracks(tracks);
+                updateQualityLabel();
+                maybeEnableCompatibilitySelection(tracks);
+                scheduleCompatibilityWatchdog();
+            }
         });
     }
 
@@ -248,18 +268,141 @@ public final class PlayerActivity extends Activity {
 
     private void prepareSource(int index, long start) {
         if (index < 0 || index >= sources.size()) return;
+        if (compatibilityWatchdog != null) h.removeCallbacks(compatibilityWatchdog);
         sourceIndex = index;
+        sourceGeneration++;
         initialResume = Math.max(0, start);
         readyToSave = false;
         fatalError = false;
-        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO).build());
+        firstVideoFrame = false;
+        compatibilityLowBitrate = false;
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                .setForceLowestBitrate(false)
+                .setForceHighestSupportedBitrate(true)
+                .build());
         Source src = sources.get(index);
+        Log.i("CDAFP", "prepare source=" + index + "; kind=" + src.kind + "; pos=" + initialResume + "; url=" + src.url);
         MediaItem.Builder b = new MediaItem.Builder().setUri(Uri.parse(src.url));
         if ("dash".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_MPD);
         else if ("hls".equals(src.kind)) b.setMimeType(MimeTypes.APPLICATION_M3U8);
         player.setMediaItem(b.build(), Math.max(0, start));
         player.prepare();
         player.setPlayWhenReady(resumePlaying);
+    }
+
+    private String currentSourceKind() {
+        return sourceIndex >= 0 && sourceIndex < sources.size() ? sources.get(sourceIndex).kind : "?";
+    }
+
+    private boolean tryNextSource(String reason) {
+        if (player == null || sourceIndex + 1 >= sources.size()) {
+            Log.e("CDAFP", "compat exhausted reason=" + reason + "; source=" + sourceIndex + "; kind=" + currentSourceKind());
+            return false;
+        }
+        long position = readyToSave ? Math.max(0, player.getCurrentPosition()) : initialResume;
+        int from = sourceIndex;
+        int next = sourceIndex + 1;
+        Log.w("CDAFP", "compat fallback reason=" + reason + "; from=" + from + ":" + sources.get(from).kind +
+                "; to=" + next + ":" + sources.get(next).kind + "; pos=" + position);
+        prepareSource(next, position);
+        return true;
+    }
+
+    private void maybeEnableCompatibilitySelection(Tracks tracks) {
+        if (player == null || compatibilityLowBitrate) return;
+        boolean hasVideo = false;
+        boolean hasSupportedVideo = false;
+        for (Tracks.Group g : tracks.getGroups()) {
+            if (g.getType() != C.TRACK_TYPE_VIDEO) continue;
+            hasVideo = true;
+            for (int i = 0; i < g.length; i++) if (g.isTrackSupported(i)) hasSupportedVideo = true;
+        }
+        if (hasVideo && !hasSupportedVideo) {
+            compatibilityLowBitrate = true;
+            Log.w("CDAFP", "all video tracks exceed reported decoder capabilities; trying lowest bitrate before source fallback");
+            player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    .setForceHighestSupportedBitrate(false)
+                    .setForceLowestBitrate(true)
+                    .build());
+        }
+    }
+
+    private void scheduleCompatibilityWatchdog() {
+        if (player == null) return;
+        final int generation = sourceGeneration;
+        if (compatibilityWatchdog != null) h.removeCallbacks(compatibilityWatchdog);
+        compatibilityWatchdog = () -> {
+            if (player == null || generation != sourceGeneration || !player.getPlayWhenReady() ||
+                    player.getPlaybackState() != Player.STATE_READY) return;
+            Tracks tracks = player.getCurrentTracks();
+            boolean hasVideo = false, selectedVideo = false, hasAudio = false, selectedAudio = false;
+            for (Tracks.Group g : tracks.getGroups()) {
+                if (g.getType() == C.TRACK_TYPE_VIDEO) {
+                    hasVideo = true;
+                    if (g.isSelected()) selectedVideo = true;
+                } else if (g.getType() == C.TRACK_TYPE_AUDIO) {
+                    hasAudio = true;
+                    if (g.isSelected()) selectedAudio = true;
+                }
+            }
+            boolean badVideo = !hasVideo || !selectedVideo || !firstVideoFrame;
+            boolean badAudio = hasAudio && !selectedAudio;
+            if (badVideo || badAudio) {
+                String reason = "silent-ready videoGroup=" + hasVideo + ",videoSelected=" + selectedVideo +
+                        ",firstFrame=" + firstVideoFrame + ",audioGroup=" + hasAudio + ",audioSelected=" + selectedAudio;
+                if (!tryNextSource(reason)) {
+                    fatalError = true;
+                    playerView.setKeepScreenOn(false);
+                    Toast.makeText(PlayerActivity.this,
+                            "Brak zgodnego strumienia wideo na tym urządzeniu", Toast.LENGTH_LONG).show();
+                }
+            } else {
+                Log.i("CDAFP", "compat ok source=" + sourceIndex + "; kind=" + currentSourceKind() +
+                        "; firstFrame=" + firstVideoFrame + "; audioSelected=" + selectedAudio);
+            }
+        };
+        h.postDelayed(compatibilityWatchdog, 6_000);
+    }
+
+    private void logTracks(Tracks tracks) {
+        int gi = 0;
+        for (Tracks.Group g : tracks.getGroups()) {
+            String type = g.getType() == C.TRACK_TYPE_VIDEO ? "video" : g.getType() == C.TRACK_TYPE_AUDIO ? "audio" : String.valueOf(g.getType());
+            Log.i("CDAFP", "tracks group=" + gi + "; type=" + type + "; selected=" + g.isSelected() +
+                    "; supported=" + g.isSupported() + "; length=" + g.length);
+            for (int i = 0; i < g.length; i++) {
+                Format f = g.getTrackFormat(i);
+                Log.i("CDAFP", "track g=" + gi + " i=" + i + "; type=" + type +
+                        "; selected=" + g.isTrackSelected(i) + "; supported=" + g.isTrackSupported(i) +
+                        "; mime=" + f.sampleMimeType + "; codecs=" + f.codecs +
+                        "; size=" + f.width + "x" + f.height + "; fps=" + f.frameRate +
+                        "; bitrate=" + f.bitrate + "; channels=" + f.channelCount + "; rate=" + f.sampleRate);
+            }
+            gi++;
+        }
+    }
+
+    private void logAvcDecoders() {
+        try {
+            for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
+                if (info.isEncoder()) continue;
+                boolean avc = false;
+                for (String type : info.getSupportedTypes()) if ("video/avc".equalsIgnoreCase(type)) avc = true;
+                if (!avc) continue;
+                MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType("video/avc");
+                StringBuilder profiles = new StringBuilder();
+                for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                    if (profiles.length() > 0) profiles.append(',');
+                    profiles.append(pl.profile).append('/').append(pl.level);
+                }
+                String hw = Build.VERSION.SDK_INT >= 29 ? String.valueOf(info.isHardwareAccelerated()) : "?";
+                Log.i("CDAFP", "avc-decoder name=" + info.getName() + "; hw=" + hw + "; profiles=" + profiles);
+            }
+        } catch (Throwable e) {
+            Log.w("CDAFP", "avc-decoder-list failed", e);
+        }
     }
 
     private void setupOsd() {
