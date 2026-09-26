@@ -37,6 +37,7 @@ import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
@@ -44,6 +45,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.util.EventLogger;
 import androidx.media3.ui.PlayerView;
 
 import java.util.ArrayList;
@@ -111,7 +113,7 @@ public final class PlayerActivity extends Activity {
             }
         });
         db = repo.db();
-        logAvcDecoders();
+        logCodecInventory();
         setupPlayer();
         setupOsd();
         buildSources();
@@ -185,6 +187,12 @@ public final class PlayerActivity extends Activity {
                 .setHandleAudioBecomingNoisy(true)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this).setDataSourceFactory(data))
                 .build();
+
+        player.addAnalyticsListener(new EventLogger("CDAFP-M3"));
+        Log.i("CDAFP", "diag-build=1.0.55; sdk=" + Build.VERSION.SDK_INT +
+                "; release=" + Build.VERSION.RELEASE + "; manufacturer=" + Build.MANUFACTURER +
+                "; model=" + Build.MODEL + "; device=" + Build.DEVICE + "; product=" + Build.PRODUCT +
+                "; hardware=" + Build.HARDWARE + "; board=" + Build.BOARD);
 
         playerView.setUseController(false);
         playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING);
@@ -369,39 +377,80 @@ public final class PlayerActivity extends Activity {
     private void logTracks(Tracks tracks) {
         int gi = 0;
         for (Tracks.Group g : tracks.getGroups()) {
-            String type = g.getType() == C.TRACK_TYPE_VIDEO ? "video" : g.getType() == C.TRACK_TYPE_AUDIO ? "audio" : String.valueOf(g.getType());
+            String type = trackTypeName(g.getType());
             Log.i("CDAFP", "tracks group=" + gi + "; type=" + type + "; selected=" + g.isSelected() +
-                    "; supported=" + g.isSupported() + "; length=" + g.length);
+                    "; supported=" + g.isSupported() + "; supportedAllowExceeds=" + g.isSupported(true) +
+                    "; adaptive=" + g.isAdaptiveSupported() + "; length=" + g.length);
             for (int i = 0; i < g.length; i++) {
                 Format f = g.getTrackFormat(i);
+                int support = g.getTrackSupport(i);
+                String drm = f.drmInitData == null ? "none" :
+                        "present(type=" + f.drmInitData.schemeType + ",count=" + f.drmInitData.schemeDataCount + ")";
                 Log.i("CDAFP", "track g=" + gi + " i=" + i + "; type=" + type +
                         "; selected=" + g.isTrackSelected(i) + "; supported=" + g.isTrackSupported(i) +
-                        "; mime=" + f.sampleMimeType + "; codecs=" + f.codecs +
+                        "; supportedAllowExceeds=" + g.isTrackSupported(i, true) +
+                        "; rawSupport=" + support + "; supportName=" + Util.getFormatSupportString(support) +
+                        "; id=" + f.id + "; label=" + f.label + "; lang=" + f.language +
+                        "; container=" + f.containerMimeType + "; mime=" + f.sampleMimeType + "; codecs=" + f.codecs +
+                        "; cryptoType=" + f.cryptoType + "; initData=" + drm +
                         "; size=" + f.width + "x" + f.height + "; fps=" + f.frameRate +
-                        "; bitrate=" + f.bitrate + "; channels=" + f.channelCount + "; rate=" + f.sampleRate);
+                        "; bitrate=" + f.bitrate + "; avgBitrate=" + f.averageBitrate + "; peakBitrate=" + f.peakBitrate +
+                        "; channels=" + f.channelCount + "; rate=" + f.sampleRate + "; pcm=" + f.pcmEncoding +
+                        "; maxInput=" + f.maxInputSize + "; selectionFlags=" + f.selectionFlags +
+                        "; roleFlags=" + f.roleFlags);
             }
             gi++;
         }
     }
 
-    private void logAvcDecoders() {
+    private static String trackTypeName(int type) {
+        if (type == C.TRACK_TYPE_VIDEO) return "video";
+        if (type == C.TRACK_TYPE_AUDIO) return "audio";
+        if (type == C.TRACK_TYPE_TEXT) return "text";
+        if (type == C.TRACK_TYPE_METADATA) return "metadata";
+        return String.valueOf(type);
+    }
+
+    private void logCodecInventory() {
         try {
             for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
                 if (info.isEncoder()) continue;
-                boolean avc = false;
-                for (String type : info.getSupportedTypes()) if ("video/avc".equalsIgnoreCase(type)) avc = true;
-                if (!avc) continue;
-                MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType("video/avc");
-                StringBuilder profiles = new StringBuilder();
-                for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
-                    if (profiles.length() > 0) profiles.append(',');
-                    profiles.append(pl.profile).append('/').append(pl.level);
+                for (String type : info.getSupportedTypes()) {
+                    if (!"video/avc".equalsIgnoreCase(type) && !"audio/mp4a-latm".equalsIgnoreCase(type)) continue;
+                    try {
+                        MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(type);
+                        StringBuilder profiles = new StringBuilder();
+                        for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                            if (profiles.length() > 0) profiles.append(',');
+                            profiles.append(pl.profile).append('/').append(pl.level);
+                        }
+                        String hw = Build.VERSION.SDK_INT >= 29 ? String.valueOf(info.isHardwareAccelerated()) : "?";
+                        String sw = Build.VERSION.SDK_INT >= 29 ? String.valueOf(info.isSoftwareOnly()) : "?";
+                        String vendor = Build.VERSION.SDK_INT >= 29 ? String.valueOf(info.isVendor()) : "?";
+                        String features = "adaptive=" + caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback) +
+                                ",secure=" + caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_SecurePlayback) +
+                                ",tunneled=" + caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback);
+                        String limits = "";
+                        if ("video/avc".equalsIgnoreCase(type)) {
+                            MediaCodecInfo.VideoCapabilities v = caps.getVideoCapabilities();
+                            limits = "; widths=" + v.getSupportedWidths() + "; heights=" + v.getSupportedHeights() +
+                                    "; frameRates=" + v.getSupportedFrameRates() + "; bitrate=" + v.getBitrateRange() +
+                                    "; align=" + v.getWidthAlignment() + "x" + v.getHeightAlignment();
+                        } else {
+                            MediaCodecInfo.AudioCapabilities a = caps.getAudioCapabilities();
+                            limits = "; maxChannels=" + a.getMaxInputChannelCount() + "; sampleRates=" +
+                                    java.util.Arrays.toString(a.getSupportedSampleRates()) + "; bitrate=" + a.getBitrateRange();
+                        }
+                        Log.i("CDAFP", "codec-inventory name=" + info.getName() + "; type=" + type +
+                                "; hw=" + hw + "; sw=" + sw + "; vendor=" + vendor +
+                                "; features=" + features + "; profiles=" + profiles + limits);
+                    } catch (Throwable e) {
+                        Log.w("CDAFP", "codec-inventory capability failed name=" + info.getName() + "; type=" + type, e);
+                    }
                 }
-                String hw = Build.VERSION.SDK_INT >= 29 ? String.valueOf(info.isHardwareAccelerated()) : "?";
-                Log.i("CDAFP", "avc-decoder name=" + info.getName() + "; hw=" + hw + "; profiles=" + profiles);
             }
         } catch (Throwable e) {
-            Log.w("CDAFP", "avc-decoder-list failed", e);
+            Log.w("CDAFP", "codec-inventory failed", e);
         }
     }
 
