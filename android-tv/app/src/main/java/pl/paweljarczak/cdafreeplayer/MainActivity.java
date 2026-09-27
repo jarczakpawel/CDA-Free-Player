@@ -1,0 +1,1184 @@
+package pl.paweljarczak.cdafreeplayer;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.UiModeManager;
+import android.Manifest;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.speech.RecognizerIntent;
+import android.speech.RecognitionListener;
+import android.speech.SpeechRecognizer;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import java.util.ArrayList;
+import java.io.File;
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.Locale;
+
+public final class MainActivity extends Activity {
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(UiScale.wrap(newBase));
+    }
+
+    private static final int DEFAULT_YEAR = 1985;
+    private static final int INITIAL_TARGET = 12;
+    private static final int INITIAL_MAX_PAGES = 4;
+    private static final int VOICE_SEARCH_REQUEST = 7301;
+    private static final int RECORD_AUDIO_REQUEST = 7302;
+
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private CdaRepository repo;
+    private ImageLoader images;
+    private MovieAdapter adapter;
+    private GridLayoutManager gridLayout;
+    private LinearLayout navPanel, detailPanel, yearRow, contentContainer;
+    private FrameLayout sideContainer;
+    private View yearFilterBar, mobileTopBar, drawerScrim;
+    private HorizontalScrollView yearScroll;
+    private RecyclerView grid;
+    private TextView status, resultsTitle, resultCount, loadingText, detailTitle, detailTime, detailRating, detailDescriptionPreview, voiceStatus, contentLoadingText;
+    private ImageView detailThumb;
+    private ImageButton detailFavorite, detailDescription, detailComments, filterButton, voiceSearch;
+    private Button browse, recent, favorites, manualSearch, settingsButton, removeCollection, mobileMenuButton;
+    private EditText manualQuery;
+    private View loadingBar, contentLoadingOverlay;
+    private FrameLayout securityOverlay, voiceOverlay;
+    private String sort = "best", duration = "all", query = "lektor 1985";
+    private Integer selectedYear = 1985;
+    private int initialPages = 0, lastCard = 0, gridColumns = 3;
+    private Movie focused;
+    private boolean launchedPlayer = false;
+    private boolean touchUi = false;
+    private boolean compactNavigation = false;
+    private boolean drawerOpen = false;
+    private boolean playerPreparing = false;
+    private boolean contentLoading = false;
+    private RequestToken contentToken;
+    private View contentReturnFocus;
+    private boolean removeMode = false;
+    private String collectionMode = null;
+    private UpdateManager updater;
+    private SpeechRecognizer speechRecognizer;
+    private boolean voiceListening;
+    private boolean challengeMode;
+    private Runnable detailImageTask;
+    private final ArrayList<Movie> browseItems = new ArrayList<>();
+    private String browseTitle = "Lektor 1985";
+    private int browseLastCard;
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        setContentView(R.layout.activity_main);
+        bind();
+        images = new ImageLoader(this);
+        updater = new UpdateManager(this);
+        repo = new CdaRepository(this, securityOverlay, findViewById(R.id.securityHost));
+        repo.setVerificationObserver((interactive, background) -> {
+            setChallengeMode(interactive);
+            setStatus(interactive ? "Weryfikacja zabezpieczeń CDA" :
+                    background ? "Weryfikacja sesji w tle…" : "Weryfikacja w tle…");
+        });
+        touchUi = !isTelevision() && getResources().getConfiguration().touchscreen != Configuration.TOUCHSCREEN_NOTOUCH;
+        setupGrid();
+        setupYears();
+        setupFilters();
+        setupLeft();
+        setupResponsiveUi();
+        setImeAccess(touchUi);
+        startSearch(query, "Lektor 1985");
+        if (!touchUi) yearRow.postDelayed(() -> focusYear(DEFAULT_YEAR, true), 250);
+        h.postDelayed(updater::checkOnStartup, 2200);
+    }
+
+    private void bind() {
+        navPanel = findViewById(R.id.navPanel); detailPanel = findViewById(R.id.detailPanel);
+        contentContainer = findViewById(R.id.contentContainer); sideContainer = findViewById(R.id.sideContainer);
+        mobileTopBar = findViewById(R.id.mobileTopBar); mobileMenuButton = findViewById(R.id.mobileMenuButton); drawerScrim = findViewById(R.id.drawerScrim);
+        yearRow = findViewById(R.id.yearRow); yearFilterBar = findViewById(R.id.yearFilterBar); filterButton = findViewById(R.id.filterButton);
+        yearScroll = findViewById(R.id.yearScroll); grid = findViewById(R.id.grid); status = findViewById(R.id.status);
+        resultsTitle = findViewById(R.id.resultsTitle); resultCount = findViewById(R.id.resultCount);
+        loadingBar = findViewById(R.id.loadingBar); loadingText = findViewById(R.id.loadingText);
+        detailThumb = findViewById(R.id.detailThumb); detailTitle = findViewById(R.id.detailTitle);
+        detailTime = findViewById(R.id.detailTime); detailRating = findViewById(R.id.detailRating);
+        detailFavorite = findViewById(R.id.detailFavorite); detailDescription = findViewById(R.id.detailDescription);
+        detailComments = findViewById(R.id.detailComments); detailDescriptionPreview = findViewById(R.id.detailDescriptionPreview);
+        browse = findViewById(R.id.browse); recent = findViewById(R.id.recent); favorites = findViewById(R.id.favorites);
+        manualQuery = findViewById(R.id.manualQuery); manualSearch = findViewById(R.id.manualSearch); voiceSearch = findViewById(R.id.voiceSearch);
+        settingsButton = findViewById(R.id.settingsButton); removeCollection = findViewById(R.id.removeCollection);
+        securityOverlay = findViewById(R.id.securityOverlay); voiceOverlay = findViewById(R.id.voiceOverlay); voiceStatus = findViewById(R.id.voiceStatus);
+        contentLoadingOverlay = findViewById(R.id.contentLoadingOverlay); contentLoadingText = findViewById(R.id.contentLoadingText);
+    }
+
+    private void setupGrid() {
+        gridColumns = calculateGridColumns();
+        gridLayout = new GridLayoutManager(this, gridColumns);
+        grid.setLayoutManager(gridLayout);
+        grid.setHasFixedSize(true);
+        grid.setItemAnimator(null);
+        grid.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        grid.setItemViewCacheSize(gridColumns * 5);
+        gridLayout.setItemPrefetchEnabled(true);
+        grid.getRecycledViewPool().setMaxRecycledViews(0, gridColumns * 8);
+        grid.getRecycledViewPool().setMaxRecycledViews(1, 8);
+        adapter = new MovieAdapter(images, new MovieAdapter.Listener() {
+            @Override public void onFocus(Movie m, int p, View v) {
+                lastCard = p;
+                if (collectionMode == null) browseLastCard = p;
+                showMovie(m);
+            }
+            @Override public void onClick(Movie m, int p) {
+                lastCard = p;
+                if (removeMode) removeFromCollection(m); else play(m);
+            }
+            @Override public void onLeftEdge(Movie m, int p) { lastCard = p; focusSectionButton(); }
+            @Override public void onTopRow(Movie m, int p) {
+                lastCard = p;
+                if (collectionMode != null) removeCollection.requestFocus();
+                else filterButton.requestFocus();
+            }
+            @Override public void onSectionUp(int targetPos) {
+                lastCard = targetPos;
+                focusCard(targetPos);
+            }
+            @Override public void onLastRow(int p) { repo.loadNext(); }
+        });
+        adapter.setColumns(gridColumns);
+        gridLayout.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
+            @Override public int getSpanSize(int position) { return adapter.isHeader(position) ? gridColumns : 1; }
+        });
+        grid.setAdapter(adapter);
+        grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(RecyclerView view, int dx, int dy) {
+                if (dy > 0 && collectionMode == null && gridLayout.findLastVisibleItemPosition() >= adapter.getItemCount() - gridColumns) repo.loadNext();
+            }
+        });
+    }
+
+
+    private void setChallengeMode(boolean active) {
+        if (challengeMode == active || images == null || grid == null) return;
+        challengeMode = active;
+        if (active) {
+            images.pause();
+            grid.suppressLayout(true);
+            loadingBar.setVisibility(View.GONE);
+            return;
+        }
+        grid.suppressLayout(false);
+        images.resume();
+        if (gridLayout == null || adapter == null) return;
+        int first = gridLayout.findFirstVisibleItemPosition();
+        int last = gridLayout.findLastVisibleItemPosition();
+        if (first != RecyclerView.NO_POSITION && last >= first) {
+            adapter.notifyItemRangeChanged(first, last - first + 1);
+        }
+    }
+
+
+    private void setImeAccess(boolean enabled) {
+        if (enabled) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+            return;
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+        View focus = getCurrentFocus();
+        if (focus != null) {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(focus.getWindowToken(), 0);
+        }
+    }
+
+    private Button tvButton(String text) {
+        Button b = new Button(this);
+        b.setText(text); b.setTextColor(Color.WHITE); b.setTextSize(13); b.setBackgroundResource(R.drawable.button_bg);
+        b.setFocusable(true); b.setMinWidth(dp(76));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(44));
+        lp.setMargins(dp(2), dp(2), dp(2), dp(2)); b.setLayoutParams(lp);
+        return b;
+    }
+
+    private void setupYears() {
+        int max = Calendar.getInstance().get(Calendar.YEAR);
+        for (int n = 1950; n <= max; n++) {
+            int year = n;
+            Button b = tvButton(String.valueOf(year));
+            b.setTag(year);
+            b.setOnClickListener(v -> {
+                selectedYear = year;
+                startSearch("lektor " + year, "Lektor " + year);
+            });
+            b.setOnFocusChangeListener((v, focused) -> { if (focused) keepYearVisible(v); });
+            b.setOnKeyListener((v, key, event) -> {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    restoreGridFocus();
+                    return true;
+                }
+                if (key == KeyEvent.KEYCODE_DPAD_RIGHT && year == max) {
+                    filterButton.requestFocus();
+                    return true;
+                }
+                return false;
+            });
+            yearRow.addView(b);
+        }
+    }
+
+    private void setupFilters() {
+        updateFilterDescription();
+        filterButton.setOnClickListener(v -> showFilterDialog());
+        filterButton.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_LEFT) {
+                focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                return true;
+            }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (removeCollection.getVisibility() == View.VISIBLE) removeCollection.requestFocus();
+                else restoreGridFocus();
+                return true;
+            }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) return true;
+            return false;
+        });
+    }
+
+    private void showFilterDialog() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(24), dp(8), dp(24), dp(4));
+
+        TextView sortTitle = new TextView(this);
+        sortTitle.setText("Sortowanie");
+        sortTitle.setTextColor(Color.WHITE);
+        sortTitle.setTextSize(16);
+        sortTitle.setPadding(0, dp(8), 0, dp(4));
+        root.addView(sortTitle);
+
+        RadioGroup sortGroup = new RadioGroup(this);
+        String[][] sorts = {{"Najtrafniejszy", "best"}, {"Najnowsze", "date"}, {"Alfabetycznie", "alf"}};
+        for (String[] x : sorts) {
+            RadioButton rb = filterRadio(x[0], x[1], x[1].equals(sort));
+            sortGroup.addView(rb);
+        }
+        root.addView(sortGroup);
+
+        TextView durationTitle = new TextView(this);
+        durationTitle.setText("Długość");
+        durationTitle.setTextColor(Color.WHITE);
+        durationTitle.setTextSize(16);
+        durationTitle.setPadding(0, dp(12), 0, dp(4));
+        root.addView(durationTitle);
+
+        RadioGroup durationGroup = new RadioGroup(this);
+        String[][] durations = {{"Każda", "all"}, {"Krótkie <5 min", "krotkie"}, {"Średnie >20 min", "srednie"}, {"Długie >60 min", "dlugie"}};
+        for (String[] x : durations) {
+            RadioButton rb = filterRadio(x[0], x[1], x[1].equals(duration));
+            durationGroup.addView(rb);
+        }
+        root.addView(durationGroup);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(root);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Sortowanie i długość")
+                .setView(scroll)
+                .setNegativeButton("Anuluj", null)
+                .setPositiveButton("Zastosuj", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String newSort = checkedTag(sortGroup, sort);
+            String newDuration = checkedTag(durationGroup, duration);
+            boolean changed = !newSort.equals(sort) || !newDuration.equals(duration);
+            sort = newSort;
+            duration = newDuration;
+            updateFilterDescription();
+            dialog.dismiss();
+            if (changed && collectionMode == null) {
+                startSearch(query, resultsTitle.getText().toString());
+            }
+        }));
+        dialog.setOnDismissListener(ignored -> filterButton.post(filterButton::requestFocus));
+        dialog.show();
+    }
+
+    private RadioButton filterRadio(String label, String value, boolean checked) {
+        RadioButton rb = new RadioButton(this);
+        rb.setText(label);
+        rb.setTextColor(Color.WHITE);
+        rb.setTextSize(15);
+        rb.setId(View.generateViewId());
+        rb.setTag(value);
+        rb.setChecked(checked);
+        rb.setFocusable(true);
+        rb.setMinHeight(dp(42));
+        return rb;
+    }
+
+    private static String checkedTag(RadioGroup group, String fallback) {
+        int id = group.getCheckedRadioButtonId();
+        if (id == -1) return fallback;
+        View v = group.findViewById(id);
+        Object tag = v == null ? null : v.getTag();
+        return tag == null ? fallback : tag.toString();
+    }
+
+    private void updateFilterDescription() {
+        String sortLabel = "best".equals(sort) ? "Najtrafniejszy" : "date".equals(sort) ? "Najnowsze" : "Alfabetycznie";
+        String durationLabel = "all".equals(duration) ? "Każda długość" : "krotkie".equals(duration) ? "<5 min" : "srednie".equals(duration) ? ">20 min" : ">60 min";
+        filterButton.setContentDescription("Filtry: " + sortLabel + ", " + durationLabel);
+    }
+
+    private void focusFirstCard() {
+        focusCard(adapter.firstMoviePosition());
+    }
+
+    private void focusCard(int pos) {
+        if (pos == RecyclerView.NO_POSITION) return;
+        grid.scrollToPosition(pos);
+        grid.post(() -> {
+            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
+            if (vh != null) vh.itemView.requestFocus();
+            else grid.post(() -> {
+                RecyclerView.ViewHolder retry = grid.findViewHolderForAdapterPosition(pos);
+                if (retry != null) retry.itemView.requestFocus();
+            });
+        });
+    }
+
+    private void restoreGridFocus() {
+        int count = adapter == null ? 0 : adapter.getItemCount();
+        if (count <= 0) return;
+        int pos = Math.max(0, Math.min(lastCard, count - 1));
+        if (adapter.isHeader(pos)) pos = adapter.firstMoviePosition();
+        if (pos == RecyclerView.NO_POSITION) return;
+        focusCard(pos);
+    }
+
+    private void setupLeft() {
+        browse.setOnClickListener(v -> { showBrowse(!touchUi); closeDrawerIfCompact(); });
+        recent.setOnClickListener(v -> { showCollection(repo.db().recent(), "Ostatnio oglądane", "recent"); closeDrawerIfCompact(); });
+        favorites.setOnClickListener(v -> { showCollection(repo.db().favorites(), "Ulubione", "favorites"); closeDrawerIfCompact(); });
+        manualSearch.setOnClickListener(v -> { manualSearch(); closeDrawerIfCompact(); });
+        voiceSearch.setOnClickListener(v -> startVoiceSearch());
+        settingsButton.setOnClickListener(v -> SettingsDialog.show(this, repo.db(), updater, this::refreshCurrentCollection, () -> {
+            repo.db().clearCache();
+            repo.clearTransientCaches();
+            for (Movie m : adapter.items()) { m.rating = null; m.ratingVotes = null; }
+            if (focused != null) { focused.rating = null; focused.ratingVotes = null; showMovie(focused); }
+            repo.gateway().webSession().clearCache();
+            clearAppCacheFiles();
+            images.clearCache();
+        }));
+        removeCollection.setOnClickListener(v -> toggleRemoveMode());
+        manualQuery.setShowSoftInputOnFocus(touchUi);
+        manualQuery.setOnFocusChangeListener((v, hasFocus) -> {
+            if (!hasFocus && !touchUi) {
+                manualQuery.setShowSoftInputOnFocus(false);
+                setImeAccess(false);
+            }
+        });
+        manualQuery.setOnClickListener(v -> {
+            setImeAccess(true);
+            manualQuery.setShowSoftInputOnFocus(true);
+            manualQuery.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) h.post(() -> imm.showSoftInput(manualQuery, InputMethodManager.SHOW_IMPLICIT));
+        });
+        manualQuery.setOnEditorActionListener((v, action, event) -> {
+            if (action == EditorInfo.IME_ACTION_SEARCH) { manualSearch(); closeDrawerIfCompact(); return true; }
+            return false;
+        });
+        manualQuery.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_DOWN) {
+                manualSearch.requestFocus();
+                return true;
+            }
+            return false;
+        });
+        for (View v : new View[]{browse, recent, favorites, settingsButton}) {
+            v.setOnKeyListener((x, key, event) -> {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    if (collectionMode != null) removeCollection.requestFocus();
+                    else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                    return true;
+                }
+                return false;
+            });
+        }
+        manualSearch.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { voiceSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { browse.requestFocus(); return true; }
+            return false;
+        });
+        voiceSearch.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { manualQuery.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { browse.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { manualSearch.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                if (adapter.getMovieCount() > 0) restoreGridFocus();
+                else if (collectionMode != null) removeCollection.requestFocus();
+                else focusYear(selectedYear == null ? DEFAULT_YEAR : selectedYear, false);
+                return true;
+            }
+            return false;
+        });
+        removeCollection.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_UP) { focusSectionButton(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_DOWN) { restoreGridFocus(); return true; }
+            return key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT;
+        });
+        detailFavorite.setOnClickListener(v -> {
+            if (focused == null) return;
+            focused.favorite = repo.db().toggleFavorite(focused);
+            updateDetailFavoriteIcon();
+            adapter.updateLocalState(focused);
+        });
+        detailDescription.setOnClickListener(v -> loadDescription());
+        detailComments.setOnClickListener(v -> loadComments());
+
+        detailFavorite.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { detailDescription.requestFocus(); return true; }
+            return false;
+        });
+        detailDescription.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { detailFavorite.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { detailComments.requestFocus(); return true; }
+            return false;
+        });
+        detailComments.setOnKeyListener((v, key, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (key == KeyEvent.KEYCODE_DPAD_LEFT) { detailDescription.requestFocus(); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_RIGHT) { restoreCard(); return true; }
+            return false;
+        });
+    }
+
+    private void startVoiceSearch() {
+        if (voiceListening) return;
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_AUDIO_REQUEST);
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            startVoiceActivityFallback();
+            return;
+        }
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(Bundle params) { showVoiceOverlay("Mów…"); }
+                @Override public void onBeginningOfSpeech() { showVoiceOverlay("Słucham…"); }
+                @Override public void onRmsChanged(float rmsdB) {}
+                @Override public void onBufferReceived(byte[] buffer) {}
+                @Override public void onEndOfSpeech() { if (voiceListening) showVoiceOverlay("Rozpoznawanie…"); }
+                @Override public void onError(int error) {
+                    stopVoiceUi();
+                    if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) recreateSpeechRecognizer();
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        Toast.makeText(MainActivity.this, "Brak dostępu do mikrofonu", Toast.LENGTH_LONG).show();
+                    } else if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        Toast.makeText(MainActivity.this, "Nie rozpoznano mowy", Toast.LENGTH_SHORT).show();
+                    } else {
+                        startVoiceActivityFallback();
+                    }
+                }
+                @Override public void onResults(Bundle results) {
+                    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    stopVoiceUi();
+                    applyVoiceResults(matches);
+                }
+                @Override public void onPartialResults(Bundle partialResults) {
+                    ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (matches != null && !matches.isEmpty() && matches.get(0) != null && !matches.get(0).trim().isEmpty())
+                        showVoiceOverlay(matches.get(0).trim());
+                }
+                @Override public void onEvent(int eventType, Bundle params) {}
+            });
+        }
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        try {
+            voiceListening = true;
+            showVoiceOverlay("Mów…");
+            speechRecognizer.startListening(intent);
+        } catch (RuntimeException e) {
+            stopVoiceUi();
+            recreateSpeechRecognizer();
+            startVoiceActivityFallback();
+        }
+    }
+
+    private void showVoiceOverlay(String text) {
+        voiceStatus.setText(text);
+        voiceOverlay.setVisibility(View.VISIBLE);
+        voiceOverlay.requestFocus();
+    }
+
+    private void stopVoiceUi() {
+        voiceListening = false;
+        voiceOverlay.setVisibility(View.GONE);
+    }
+
+    private void cancelVoiceSearch() {
+        if (speechRecognizer != null && voiceListening) speechRecognizer.cancel();
+        stopVoiceUi();
+        voiceSearch.requestFocus();
+    }
+
+    private void recreateSpeechRecognizer() {
+        if (speechRecognizer != null) {
+            speechRecognizer.destroy();
+            speechRecognizer = null;
+        }
+    }
+
+    private void startVoiceActivityFallback() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag());
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        try {
+            startActivityForResult(intent, VOICE_SEARCH_REQUEST);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "Brak systemowej usługi rozpoznawania mowy", Toast.LENGTH_LONG).show();
+            voiceSearch.requestFocus();
+        }
+    }
+
+    private void applyVoiceResults(ArrayList<String> results) {
+        if (results == null) return;
+        for (String value : results) {
+            String spoken = value == null ? "" : value.trim();
+            if (spoken.isEmpty()) continue;
+            manualQuery.setText(spoken);
+            manualQuery.setSelection(spoken.length());
+            selectedYear = null;
+            startSearch(spoken, "Wyniki: " + spoken);
+            closeDrawerIfCompact();
+            return;
+        }
+        voiceSearch.requestFocus();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != RECORD_AUDIO_REQUEST) return;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) startVoiceSearch();
+        else Toast.makeText(this, "Wyszukiwanie głosowe wymaga dostępu do mikrofonu", Toast.LENGTH_LONG).show();
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != VOICE_SEARCH_REQUEST || resultCode != RESULT_OK || data == null) return;
+        applyVoiceResults(data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS));
+    }
+
+    private void manualSearch() {
+        String q = manualQuery.getText().toString().trim();
+        if (q.isEmpty()) return;
+        manualQuery.setShowSoftInputOnFocus(false);
+        manualQuery.clearFocus();
+        setImeAccess(false);
+        selectedYear = null;
+        startSearch(q, "Wyniki: " + q);
+    }
+
+    private void startSearch(String q, String title) {
+        collectionMode = null; removeMode = false; adapter.setRemoveMode(false); adapter.setSectioned(false); removeCollection.setVisibility(View.GONE);
+        yearFilterBar.setVisibility(View.VISIBLE);
+        browseTitle = title; browseItems.clear(); browseLastCard = 0;
+        repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
+        query = q; initialPages = 0; adapter.setItems(Collections.emptyList());
+        resultsTitle.setText(title); resultCount.setText(""); showNav();
+        repo.startSearch(q, sort, duration, new CdaRepository.SearchListener() {
+            @Override public void onLoading(int page) {
+                loadingBar.setVisibility(View.VISIBLE); loadingText.setText("Wczytywanie strony " + page + "…");
+                setStatus("Wczytywanie strony " + page + "…");
+            }
+            @Override public void onPage(ArrayList<Movie> movies, int page, SearchPage stats) {
+                int previousCount = adapter.getMovieCount();
+                loadingBar.setVisibility(View.GONE); initialPages++; adapter.append(movies);
+                browseItems.clear(); browseItems.addAll(adapter.items());
+                resultCount.setText(adapter.getMovieCount() + " filmów");
+                setStatus("p" + page + ": +" + movies.size() + " • Premium pominięte: " + stats.premium);
+                if (adapter.getMovieCount() == previousCount || adapter.getMovieCount() < INITIAL_TARGET && initialPages < INITIAL_MAX_PAGES) h.postDelayed(repo::loadNext, 100);
+            }
+            @Override public void onFinished(String why) { loadingBar.setVisibility(View.GONE); setStatus(why + " • " + adapter.getMovieCount() + " filmów"); }
+            @Override public void onError(String e) { loadingBar.setVisibility(View.GONE); setStatus("Błąd: " + e); }
+            @Override public void onVerification(boolean interactive) { setStatus(interactive ? "Weryfikacja zabezpieczeń CDA" : "Weryfikacja w tle…"); }
+        });
+    }
+
+    private void showCollection(ArrayList<Movie> list, String title, String mode) {
+        if (collectionMode == null) {
+            browseItems.clear(); browseItems.addAll(adapter.items()); browseTitle = resultsTitle.getText().toString(); browseLastCard = lastCard;
+        }
+        repo.cancelPlayer(); playerPreparing = false; focused = null; lastCard = 0;
+        repo.pauseBrowseSearch();
+        loadingBar.setVisibility(View.GONE);
+        collectionMode = mode;
+        removeMode = false;
+        adapter.setRemoveMode(false);
+        adapter.setSectioned(true);
+        yearFilterBar.setVisibility(View.GONE);
+        removeCollection.setVisibility(View.VISIBLE);
+        removeCollection.setText("recent".equals(mode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
+        adapter.setItems(list); resultsTitle.setText(title); resultCount.setText(adapter.getMovieCount() + " filmów"); showNav();
+        lastCard = adapter.firstMoviePosition();
+        if (!list.isEmpty()) grid.post(this::focusFirstCard);
+    }
+
+    private void showBrowse(boolean focusContent) {
+        collectionMode = null; removeMode = false; adapter.setRemoveMode(false); adapter.setSectioned(false);
+        removeCollection.setVisibility(View.GONE); yearFilterBar.setVisibility(View.VISIBLE);
+        if (browseItems.isEmpty()) {
+            startSearch(query, browseTitle);
+            if (focusContent) grid.postDelayed(this::focusFirstCard, 180);
+            return;
+        }
+        repo.resumeBrowseSearch();
+        adapter.setItems(browseItems); resultsTitle.setText(browseTitle); resultCount.setText(adapter.getMovieCount() + " filmów");
+        lastCard = Math.max(0, Math.min(browseLastCard, adapter.getItemCount() - 1));
+        showNav();
+        if (focusContent) restoreBrowseCard();
+    }
+
+    private void restoreBrowseCard() {
+        restoreGridFocus();
+    }
+
+    private Button sectionButton() {
+        if ("recent".equals(collectionMode)) return recent;
+        if ("favorites".equals(collectionMode)) return favorites;
+        return browse;
+    }
+
+    private void focusSectionButton() {
+        showNav();
+        if (compactNavigation) openDrawer(true);
+        sectionButton().requestFocus();
+    }
+
+    private void toggleRemoveMode() {
+        if (collectionMode == null) return;
+        removeMode = !removeMode;
+        adapter.setRemoveMode(removeMode);
+        removeCollection.setText(removeMode ? "Anuluj usuwanie" :
+                ("recent".equals(collectionMode) ? "Usuń z oglądanych" : "Usuń z ulubionych"));
+        if (removeMode && adapter.getItemCount() > 0) restoreCard();
+    }
+
+    private void removeFromCollection(Movie m) {
+        if (!removeMode || collectionMode == null || m == null) return;
+        String label = "recent".equals(collectionMode) ? "oglądanych" : "ulubionych";
+        TvDialogs.confirm(this, "Potwierdzenie", "Usunąć „" + m.title + "” z " + label + "?", () -> {
+            String mode = collectionMode;
+            removeMode = false;
+            adapter.setRemoveMode(false);
+            if ("recent".equals(mode)) {
+                repo.db().removeHistory(m.id);
+                showCollection(repo.db().recent(), "Ostatnio oglądane", "recent");
+            } else {
+                repo.db().removeFavorite(m.id);
+                showCollection(repo.db().favorites(), "Ulubione", "favorites");
+            }
+        }, () -> {
+            removeMode = false;
+            adapter.setRemoveMode(false);
+            removeCollection.setText("recent".equals(collectionMode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
+        });
+    }
+
+    private void refreshCurrentCollection() {
+        if ("recent".equals(collectionMode)) {
+            showCollection(repo.db().recent(), "Ostatnio oglądane", "recent");
+        } else if ("favorites".equals(collectionMode)) {
+            showCollection(repo.db().favorites(), "Ulubione", "favorites");
+        } else {
+            repo.db().decorateLocalState(adapter.items());
+            adapter.notifyLocalStatesChanged();
+        }
+    }
+
+    private void showMovie(Movie m) {
+        focused = m;
+        showDetail();
+        detailTitle.setText(m.title);
+        if (detailImageTask != null) h.removeCallbacks(detailImageTask);
+        images.cancel(detailThumb);
+        final Movie imageMovie = m;
+        detailImageTask = () -> {
+            if (focused == imageMovie) images.load(imageMovie.imageUrl, detailThumb);
+        };
+        h.postDelayed(detailImageTask, 120);
+        detailTime.setText(m.duration + (m.positionMs > 0 ? " • oglądano " + format(m.positionMs) : ""));
+        if (m.rating == null) {
+            detailRating.setText("");
+            detailRating.setVisibility(View.GONE);
+        } else {
+            String r = "★ " + String.format(Locale.US, "%.1f / 5", m.rating);
+            if (m.ratingVotes != null && m.ratingVotes > 0) r += " • " + m.ratingVotes + " ocen";
+            detailRating.setText(r);
+            detailRating.setVisibility(View.VISIBLE);
+        }
+        detailDescriptionPreview.setText(m.shortDescription == null ? "" : m.shortDescription);
+        updateDetailFavoriteIcon();
+        MovieMetadata known = repo == null ? null : repo.sessionMetadata(m.id);
+        updateDetailCommentsDescription(known == null ? null : known.commentCount);
+    }
+
+    private void loadDescription() {
+        if (contentLoading) return;
+        Movie m = focused;
+        if (m == null) return;
+        MovieMetadata cached = repo.sessionMetadata(m.id);
+        if (cached != null && cached.description != null && !cached.description.isEmpty()) {
+            TvDialogs.text(this, "Opis", cached.description, cached);
+            return;
+        }
+        beginContentLoad("Wczytywanie opisu…", detailDescription);
+        contentToken = repo.loadMetadata(m, true, new CdaRepository.MetadataListener() {
+            @Override public void onMetadata(MovieMetadata md) {
+                String d = md == null || md.description == null || md.description.isEmpty()
+                        ? (m.shortDescription == null ? "" : m.shortDescription)
+                        : md.description;
+                if (md != null) {
+                    if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
+                    if (m.rating == null && md.rating != null) m.rating = md.rating;
+                    if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
+                    if (focused == m) showMovie(m);
+                }
+                endContentLoad();
+                setStatus("Gotowe");
+                TvDialogs.text(MainActivity.this, "Opis", d, md);
+            }
+            @Override public void onError(String e) {
+                endContentLoad();
+                setStatus("Błąd: " + e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void loadComments() {
+        if (contentLoading || focused == null) return;
+        beginContentLoad("Wczytywanie komentarzy…", detailComments);
+        contentToken = repo.loadComments(focused, new CdaRepository.CommentsListener() {
+            @Override public void onComments(ArrayList<CommentItem> comments, MovieMetadata md) {
+                if (md != null) {
+                    if (md.rating != null) focused.rating = md.rating;
+                    if (md.cdaVotes != null) focused.ratingVotes = md.cdaVotes;
+                }
+                if (focused != null) showMovie(focused);
+                updateDetailCommentsDescription(comments.size());
+                endContentLoad();
+                TvDialogs.comments(MainActivity.this, comments, md);
+                setStatus("Gotowe");
+            }
+            @Override public void onError(String e) {
+                endContentLoad();
+                setStatus(e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void beginContentLoad(String text, View returnFocus) {
+        if (contentLoading) return;
+        contentLoading = true;
+        contentReturnFocus = returnFocus;
+        contentLoadingText.setText(text);
+        contentLoadingOverlay.setVisibility(View.VISIBLE);
+        contentLoadingOverlay.requestFocus();
+    }
+
+    private void endContentLoad() {
+        contentToken = null;
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        if (focus != null) focus.requestFocus();
+    }
+
+    private void cancelContentLoad() {
+        RequestToken token = contentToken;
+        contentToken = null;
+        if (token != null) repo.cancel(token);
+        contentLoading = false;
+        contentLoadingOverlay.setVisibility(View.GONE);
+        View focus = contentReturnFocus;
+        contentReturnFocus = null;
+        if (focus != null) focus.requestFocus();
+        setStatus("Wczytywanie przerwane");
+    }
+
+    private void updateDetailFavoriteIcon() {
+        if (focused == null) return;
+        detailFavorite.setImageResource(focused.favorite ? R.drawable.ic_favorite : R.drawable.ic_favorite_border);
+        detailFavorite.setContentDescription(focused.favorite ? "Usuń z ulubionych" : "Dodaj do ulubionych");
+    }
+
+    private void updateDetailCommentsDescription(Integer count) {
+        detailComments.setContentDescription(count == null ? "Komentarze" : "Komentarze, " + count);
+    }
+
+    private void play(Movie m) {
+        if (playerPreparing) return;
+        playerPreparing = true;
+        loadingBar.setVisibility(View.GONE);
+        setStatus("Przygotowanie filmu…");
+        Toast.makeText(this, "Przygotowanie filmu…", Toast.LENGTH_SHORT).show();
+        repo.loadPlayer(m, new CdaRepository.PlayerListener() {
+            @Override public void onPlayer(PlayerData p, MovieMetadata md) {
+                playerPreparing = false;
+                if (md != null) {
+                    if ((m.shortDescription == null || m.shortDescription.isEmpty()) && md.description != null && !md.description.isEmpty()) m.shortDescription = md.description;
+                    if (m.rating == null && md.rating != null) m.rating = md.rating;
+                    if (m.ratingVotes == null && md.cdaVotes != null) m.ratingVotes = md.cdaVotes;
+                }
+                long resume = repo.db().resumePosition(m.id);
+                repo.enterPlaybackMode();
+                images.trimForPlayback();
+                launchedPlayer = true;
+                Intent i = new Intent(MainActivity.this, PlayerActivity.class);
+                m.title = MovieTitle.clean(m.title, m.duration);
+                i.putExtra("id", m.id); i.putExtra("title", m.title); i.putExtra("url", m.url);
+                i.putExtra("durationText", m.duration); i.putExtra("image", m.imageUrl);
+                i.putExtra("shortDescription", m.shortDescription == null ? "" : m.shortDescription);
+                i.putExtra("dash", p.dash); i.putExtra("hls", p.hls); i.putExtra("direct", p.direct);
+                i.putExtra("resolved", p.resolved); i.putExtra("resolvedKind", p.resolvedKind); i.putExtra("resume", resume);
+                i.putExtra("description", md.description);
+                Double playerRating = md.rating;
+                Integer playerVotes = md.cdaVotes;
+                if (playerRating != null) i.putExtra("rating", playerRating);
+                if (playerVotes != null) i.putExtra("cdaVotes", playerVotes);
+                if (md.imdbRating != null && !md.imdbRating.isEmpty()) i.putExtra("imdbRating", md.imdbRating);
+                if (md.imdbVotes != null) i.putExtra("imdbVotes", md.imdbVotes);
+                if (md.commentCount != null) i.putExtra("commentCount", md.commentCount);
+                try {
+                    startActivity(i);
+                    setStatus("Gotowe");
+                } catch (RuntimeException e) {
+                    launchedPlayer = false;
+                    repo.exitPlaybackMode();
+                    setStatus("Nie można uruchomić odtwarzacza");
+                }
+            }
+            @Override public void onError(String e) {
+                playerPreparing = false;
+                setStatus("Błąd: " + e);
+                Toast.makeText(MainActivity.this, e, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void focusDetailActions() {
+        showDetail();
+        if (compactNavigation) openDrawer(false);
+        detailFavorite.requestFocus();
+    }
+
+    private void restoreCard() {
+        showDetail();
+        grid.post(() -> {
+            RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(lastCard);
+            if (vh != null) vh.itemView.requestFocus();
+            else {
+                grid.scrollToPosition(lastCard);
+                grid.post(() -> { RecyclerView.ViewHolder x = grid.findViewHolderForAdapterPosition(lastCard); if (x != null) x.itemView.requestFocus(); });
+            }
+        });
+    }
+
+    private void showNav() { navPanel.setVisibility(View.VISIBLE); detailPanel.setVisibility(View.GONE); }
+    private void showDetail() { navPanel.setVisibility(View.GONE); detailPanel.setVisibility(View.VISIBLE); }
+
+    private void focusYear(int year, boolean center) {
+        for (int i = 0; i < yearRow.getChildCount(); i++) {
+            View v = yearRow.getChildAt(i);
+            if (Integer.valueOf(year).equals(v.getTag())) {
+                v.requestFocus();
+                int x = center ? Math.max(0, v.getLeft() - (yearScroll.getWidth() - v.getWidth()) / 2) : Math.max(0, v.getLeft() - 12);
+                yearScroll.smoothScrollTo(x, 0); break;
+            }
+        }
+    }
+
+    private void keepYearVisible(View v) {
+        int l = v.getLeft(), rr = v.getRight(), vl = yearScroll.getScrollX(), vr = vl + yearScroll.getWidth(), margin = 12;
+        if (l < vl + margin) yearScroll.smoothScrollTo(Math.max(0, l - margin), 0);
+        else if (rr > vr - margin) yearScroll.smoothScrollTo(rr - yearScroll.getWidth() + margin, 0);
+    }
+
+    private boolean isTelevision() {
+        UiModeManager manager = (UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        return (manager != null && manager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+    }
+
+    private int calculateGridColumns() {
+        Configuration c = getResources().getConfiguration();
+        int width = c.screenWidthDp > 0 ? c.screenWidthDp : (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
+        boolean tv = isTelevision();
+        boolean tablet = c.smallestScreenWidthDp >= 600;
+        int available = width - ((tv || (tablet && width >= 900)) ? 292 : 20);
+        if (tv) return available >= 1200 ? 4 : 3;
+        if (available >= 900) return 5;
+        if (available >= 680) return 4;
+        if (available >= 480) return 3;
+        return 2;
+    }
+
+    private void setupResponsiveUi() {
+        mobileMenuButton.setOnClickListener(v -> openDrawer(true));
+        drawerScrim.setOnClickListener(v -> closeDrawer());
+        applyResponsiveLayout();
+    }
+
+    private void applyResponsiveLayout() {
+        Configuration c = getResources().getConfiguration();
+        boolean tablet = c.smallestScreenWidthDp >= 600;
+        boolean permanent = isTelevision() || (tablet && c.screenWidthDp >= 900);
+        compactNavigation = !permanent;
+
+        int widthPx = getResources().getDisplayMetrics().widthPixels;
+        int sideWidth = permanent ? dp(292) : Math.min(dp(320), Math.max(dp(260), widthPx - dp(32)));
+        FrameLayout.LayoutParams sideLp = (FrameLayout.LayoutParams) sideContainer.getLayoutParams();
+        sideLp.width = sideWidth;
+        sideContainer.setLayoutParams(sideLp);
+
+        FrameLayout.LayoutParams contentLp = (FrameLayout.LayoutParams) contentContainer.getLayoutParams();
+        contentLp.leftMargin = permanent ? sideWidth : 0;
+        contentContainer.setLayoutParams(contentLp);
+        mobileTopBar.setVisibility(compactNavigation ? View.VISIBLE : View.GONE);
+
+        if (permanent) {
+            drawerOpen = false;
+            drawerScrim.animate().cancel();
+            drawerScrim.setVisibility(View.GONE);
+            drawerScrim.setAlpha(0f);
+            sideContainer.animate().cancel();
+            sideContainer.setTranslationX(0f);
+            sideContainer.setVisibility(View.VISIBLE);
+        } else if (!drawerOpen) {
+            drawerScrim.setVisibility(View.GONE);
+            sideContainer.setVisibility(View.GONE);
+        }
+        updateGridColumns();
+    }
+
+    private void updateGridColumns() {
+        int cols = calculateGridColumns();
+        if (cols == gridColumns) return;
+        gridColumns = cols;
+        if (gridLayout != null) gridLayout.setSpanCount(cols);
+        if (adapter != null) adapter.setColumns(cols);
+        if (grid != null) {
+            grid.setItemViewCacheSize(cols * 5);
+            grid.getRecycledViewPool().setMaxRecycledViews(0, cols * 8);
+        }
+    }
+
+    private void openDrawer(boolean nav) {
+        if (!compactNavigation) return;
+        if (nav) showNav();
+        drawerOpen = true;
+        drawerScrim.animate().cancel();
+        sideContainer.animate().cancel();
+        drawerScrim.setAlpha(0f);
+        drawerScrim.setVisibility(View.VISIBLE);
+        sideContainer.setVisibility(View.VISIBLE);
+        sideContainer.post(() -> {
+            sideContainer.setTranslationX(-sideContainer.getWidth());
+            sideContainer.animate().translationX(0f).setDuration(180).start();
+            drawerScrim.animate().alpha(1f).setDuration(180).start();
+        });
+    }
+
+    private void closeDrawerIfCompact() {
+        if (compactNavigation) closeDrawer();
+    }
+
+    private void closeDrawer() {
+        if (!compactNavigation || !drawerOpen) return;
+        drawerOpen = false;
+        drawerScrim.animate().cancel();
+        sideContainer.animate().cancel();
+        drawerScrim.animate().alpha(0f).setDuration(150).start();
+        sideContainer.animate().translationX(-sideContainer.getWidth()).setDuration(150).withEndAction(() -> {
+            if (!drawerOpen && compactNavigation) {
+                sideContainer.setVisibility(View.GONE);
+                sideContainer.setTranslationX(0f);
+                drawerScrim.setVisibility(View.GONE);
+            }
+        }).start();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        touchUi = !isTelevision() && newConfig.touchscreen != Configuration.TOUCHSCREEN_NOTOUCH;
+        applyResponsiveLayout();
+    }
+
+    private void clearAppCacheFiles() {
+        File root = getCacheDir();
+        File[] files = root == null ? null : root.listFiles();
+        if (files == null) return;
+        for (File f : files) deleteRecursively(f);
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children != null) for (File child : children) deleteRecursively(child);
+        }
+        try { f.delete(); } catch (RuntimeException ignored) {}
+    }
+
+    private void setStatus(String text) { status.setText(text); }
+    private int dp(int x) { return (int) (x * getResources().getDisplayMetrics().density + .5f); }
+    private static String format(long ms) {
+        long s = ms / 1000, hh = s / 3600, mm = (s % 3600) / 60;
+        return hh > 0 ? String.format(Locale.US, "%d:%02d:%02d", hh, mm, s % 60) : String.format(Locale.US, "%d:%02d", mm, s % 60);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (updater != null) updater.onHostResume();
+        if (repo != null && launchedPlayer) {
+            launchedPlayer = false;
+            repo.exitPlaybackMode();
+            if ("recent".equals(collectionMode)) adapter.setItems(repo.db().recent());
+            else if ("favorites".equals(collectionMode)) adapter.setItems(repo.db().favorites());
+            else {
+                repo.db().decorateLocalState(adapter.items());
+                adapter.notifyLocalStatesChanged();
+            }
+            resultCount.setText(adapter.getMovieCount() + " filmów");
+            lastCard = Math.max(0, Math.min(lastCard, adapter.getItemCount() - 1));
+            focused = adapter.movieAtAdapterPosition(lastCard);
+            if (focused != null) {
+                showMovie(focused);
+                restoreCard();
+            }
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        if (compactNavigation && drawerOpen) { closeDrawer(); return; }
+        if (contentLoading) { cancelContentLoad(); return; }
+        if (voiceListening || voiceOverlay.getVisibility() == View.VISIBLE) { cancelVoiceSearch(); return; }
+        if (playerPreparing) {
+            repo.cancelPlayer(); playerPreparing = false; setStatus("Przygotowanie filmu przerwane"); return;
+        }
+        if (removeMode) {
+            removeMode = false; adapter.setRemoveMode(false);
+            if (collectionMode != null) removeCollection.setText("recent".equals(collectionMode) ? "Usuń z oglądanych" : "Usuń z ulubionych");
+            return;
+        }
+        if (repo.gateway().webSession().isInteractive()) {
+            repo.gateway().webSession().cancelCurrent(); setStatus("Weryfikacja przerwana"); return;
+        }
+        View f = getCurrentFocus();
+        if (f != null && isDescendant(detailPanel, f)) { focusSectionButton(); return; }
+        if (f != null && isDescendant(grid, f)) { focusDetailActions(); return; }
+        if (f != null && (isDescendant(yearFilterBar, f) || f == removeCollection)) { focusSectionButton(); return; }
+        if (f != null && isDescendant(navPanel, f)) {
+            if (collectionMode != null) { showBrowse(false); browse.requestFocus(); return; }
+            showExitConfirmation();
+            return;
+        }
+        focusSectionButton();
+    }
+
+    private void showExitConfirmation() {
+        TvDialogs.confirm(this, "Zamknąć aplikację?", "Czy na pewno chcesz zamknąć CDA Free Player?", this::exitCompletely, null);
+    }
+
+    private void exitCompletely() {
+        if (repo != null) { repo.cancelSearch(); repo.cancelPlayer(); }
+        finishAffinity();
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
+    private static boolean isDescendant(View parent, View child) {
+        View x = child;
+        while (x != null) {
+            if (x == parent) return true;
+            if (!(x.getParent() instanceof View)) break;
+            x = (View) x.getParent();
+        }
+        return false;
+    }
+
+    @Override
+    protected void onStop() {
+        if (voiceListening && speechRecognizer != null) speechRecognizer.cancel();
+        stopVoiceUi();
+        if (playerPreparing && !launchedPlayer) {
+            repo.cancelPlayer();
+            playerPreparing = false;
+            setStatus("Przygotowanie filmu przerwane");
+        }
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        h.removeCallbacksAndMessages(null);
+        if (speechRecognizer != null) { speechRecognizer.destroy(); speechRecognizer = null; }
+        if (repo != null) repo.shutdown();
+        if (images != null) images.shutdown();
+        if (updater != null) updater.shutdown();
+        super.onDestroy();
+    }
+}
