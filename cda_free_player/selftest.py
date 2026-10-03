@@ -58,8 +58,8 @@ def _test_dash_launcher_contract():
     win = Player._dash_browser_candidates("windows")
     mac = Player._dash_browser_candidates("darwin")
     linux = Player._dash_browser_candidates("linux")
-    if not win or "edge" not in win[0].lower():
-        raise RuntimeError("Windows DASH browser preference must start with Microsoft Edge")
+    if not win or "chrome" not in win[0].lower():
+        raise RuntimeError("Windows DASH browser preference must start with Google Chrome")
     if not mac or "Google Chrome.app" not in mac[0]:
         raise RuntimeError("macOS DASH browser preference must start with Google Chrome")
     if not linux or "google-chrome" not in linux[0]:

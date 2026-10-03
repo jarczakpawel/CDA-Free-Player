@@ -308,15 +308,15 @@ class Player:
                 os.environ.get("LOCALAPPDATA"),
             )
             relative = (
-                "Microsoft/Edge/Application/msedge.exe",
                 "Google/Chrome/Application/chrome.exe",
+                "Microsoft/Edge/Application/msedge.exe",
                 "BraveSoftware/Brave-Browser/Application/brave.exe",
             )
             for rel in relative:
                 for root in roots:
                     if root:
                         candidates.append(str(Path(root) / rel))
-            candidates.extend(("msedge.exe", "chrome.exe", "brave.exe"))
+            candidates.extend(("chrome.exe", "msedge.exe", "brave.exe"))
         else:
             candidates.extend((
                 "google-chrome-stable",
